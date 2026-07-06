@@ -27,11 +27,32 @@ def listen_to_patient():
             return ""
 
 def is_safe_for_public(text):
-    sensitive_keywords = ["esi", "level", "โรค", "ประวัติ", "แพ้ยา", "ความดัน", "hiv", "เอดส์", "ฉุกเฉิน", "วิกฤต", "หัวใจ"]
+    sensitive_keywords = [
+        "esi", "level", "โรค", "ประวัติ", "แพ้ยา", "ความดัน",
+        "hiv", "เอดส์", "วิกฤต",
+    ]
+
+    # คำที่ปกติน่า block แต่ถ้าอยู่ใน clinical context ให้ผ่านได้
+    # tuple: (คำ sensitive, [คำ context ที่แสดงว่าเป็น clinical summary ปกติ])
+    clinical_whitelist_patterns = [
+        ("หัวใจ",   ["cardiac", "concern", "chest", "หน้าอก", "guarding", "observation", "triage", "หัวใจเต้น"]),
+        ("ฉุกเฉิน", ["triage", "assessment", "observation", "clinical", "guarding"]),
+    ]
+
     text_lower = text.lower()
+
+    # เช็ค sensitive keywords ทั่วไป
     for keyword in sensitive_keywords:
         if keyword in text_lower:
             return False, keyword
+
+    # เช็ค whitelist patterns: block เฉพาะเมื่อไม่มี clinical context
+    for sensitive_word, allowed_context_words in clinical_whitelist_patterns:
+        if sensitive_word in text_lower:
+            is_clinical_context = any(ctx in text_lower for ctx in allowed_context_words)
+            if not is_clinical_context:
+                return False, sensitive_word
+
     return True, None
 
 def speak_audio(text):

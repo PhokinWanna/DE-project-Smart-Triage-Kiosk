@@ -4,7 +4,6 @@ import math
 import time
 import numpy as np
 
-# --- Import Custom Modules ---
 from V_Module import calculate_angle, check_intersection
 from R_Module import call_llama_reasoning
 from A_Module import listen_to_patient, handle_output_guardrail, speak_audio
@@ -12,7 +11,7 @@ from A_Module import listen_to_patient, handle_output_guardrail, speak_audio
 mp_pose = mp.solutions.pose
 mp_drawing = mp.solutions.drawing_utils
 
-cap = cv2.VideoCapture(0) # เปลี่ยนเป็น 0 หรือ 1 ตามกล้องที่คุณใช้
+cap = cv2.VideoCapture(0) 
 
 holding_start_time = 0
 active_zone = None
@@ -222,16 +221,21 @@ with mp_pose.Pose(min_detection_confidence=0.5, min_tracking_confidence=0.5) as 
                 speak_audio("กรุณาบอกอาการของคุณได้เลยค่ะ")
                 patient_voice = listen_to_patient() 
                 
-                if patient_voice:
-                    json_result = call_llama_reasoning(active_zone, current_skin_status, patient_voice)
-                    print("\n[Raw Llama Response]:\n", json_result)
-                    handle_output_guardrail(json_result)
-                else:
-                    speak_audio("ระบบไม่ได้ยินเสียงค่ะ ขออภัยในความไม่สะดวก")
-
-                active_zone = None
-                holding_start_time = 0
-                time.sleep(1)
+                try:
+                    if patient_voice:
+                        json_result = call_llama_reasoning(active_zone, current_skin_status, patient_voice)
+                        print("\n[Raw Llama Response]:\n", json_result)
+                        handle_output_guardrail(json_result)
+                    else:
+                        speak_audio("ระบบไม่ได้ยินเสียงค่ะ ขออภัยในความไม่สะดวก")
+                except Exception as e:
+                    print(f"⚠️ [Processing Error]: {e}")
+                    speak_audio("เกิดข้อผิดพลาด กรุณาติดต่อพยาบาลค่ะ")
+                finally:
+                    # รีเซ็ต zone เสมอ ไม่ว่าจะเกิดอะไรขึ้น (STT fail, LLM error, ฯลฯ)
+                    active_zone = None
+                    holding_start_time = 0
+                    time.sleep(1)
 
         if clean_image is not None:
             cv2.imshow('Clean View', clean_image)
