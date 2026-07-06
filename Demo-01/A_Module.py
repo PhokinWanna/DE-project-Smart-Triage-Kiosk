@@ -10,14 +10,14 @@ pygame.mixer.init()
 def listen_to_patient():
     recognizer = sr.Recognizer()
     with sr.Microphone() as source:
-        print("\n" + "="*50)
+        print("\n" + "-"*50)
         print("🎤 [ระบบกำลังฟัง] กรุณาพูดอาการของคุณ...")
         recognizer.adjust_for_ambient_noise(source, duration=1)
         try:
             audio = recognizer.listen(source, timeout=5, phrase_time_limit=15)
             print("🔄 [กำลังประมวลผลเสียง...]")
             text = recognizer.recognize_google(audio, language="th-TH")
-            print(f"✅ ผู้ป่วยพูดว่า: '{text}'")
+            print(f"✅ [ระบบได้ยิน] ผู้ป่วยพูดว่า: '{text}'")
             return text
         except (sr.WaitTimeoutError, sr.UnknownValueError):
             print("⚠️ [ไม่พบเสียงพูด หรือ ฟังไม่ชัดเจน]")
