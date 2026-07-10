@@ -61,21 +61,22 @@ def call_llama_reasoning(visual_flag, skin_status, patient_text):
 
     if scenario == "CONFIRMED":
         scenario_note = (
-    "SCENARIO: A — CONFIRMED\n"
-    "The patient verbally reported symptoms that match the visual flag zone. Both agree.\n"
-    "Write a clean, direct clinical summary. "
-    "Do NOT write any denial, conflict, or hesitation language — there is none."
-    )
+            "SCENARIO: A — CONFIRMED\n"
+            "The patient verbally reported symptoms that match the visual flag zone. Both agree.\n"
+            "Write a clean, direct clinical summary. "
+            "Do NOT write any denial, conflict, or hesitation language — there is none."
+        )
     elif scenario == "CONFLICT":
         scenario_note = (
-    "SCENARIO: B — CONFLICT\n"
-    "Visual sensor detected sustained guarding, but verbal report does not match. Override verbal report."
-    )
+            "SCENARIO: B — CONFLICT\n"
+            f"Visual sensor detected sustained guarding of '{visual_flag}', "
+            "but the verbal report does not mention related symptoms. "
+            "Override the verbal report. Assign ESI based on the zone. "
+            "Note in summary that verbal report did not match observed guarding behavior."
+        )
     else:
-        scenario_note = (
-    "SCENARIO: C — NO FLAG\n"
-    "No posture flag detected. Base ESI on verbal and skin."
-    )
+        scenario_note = "SCENARIO: C — NO FLAG\nNo posture flag detected. Base ESI on verbal and skin."
+
     combined_input = (
         f"Visual Posture Flag (objective): {visual_flag if visual_flag else 'None'}\n"
         f"Skin Status: {skin_status}\n"

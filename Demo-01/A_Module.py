@@ -9,18 +9,32 @@ pygame.mixer.init()
 
 def listen_to_patient():
     recognizer = sr.Recognizer()
+
+    # --- FIX: ค่า default ของ pause_threshold คือ 0.8 วินาที
+    # ถ้าผู้ป่วยหยุดพักระหว่างประโยคแค่ 0.8s ระบบจะตัดเสียงทันที
+    # เพิ่มเป็น 2.5s เพื่อให้พูดได้ยาวขึ้นโดยไม่ถูกตัดกลางคัน
+    recognizer.pause_threshold = 2.5          # วินาที silence ก่อนตัด
+    recognizer.non_speaking_duration = 2.5   # ต้องตรงกับ pause_threshold เสมอ
+    recognizer.phrase_threshold = 0.3        # ความไวในการเริ่มจับเสียง (default 0.3 ดีอยู่แล้ว)
+
     with sr.Microphone() as source:
-        print("\n" + "-"*50)
+        print("\n" + "="*50)
         print("🎤 [ระบบกำลังฟัง] กรุณาพูดอาการของคุณ...")
-        recognizer.adjust_for_ambient_noise(source, duration=1)
+        # เพิ่ม duration เป็น 2s เพื่อ calibrate noise ในสภาพแวดล้อม รพ. ได้ดีขึ้น
+        recognizer.adjust_for_ambient_noise(source, duration=2)
         try:
-            audio = recognizer.listen(source, timeout=5, phrase_time_limit=15)
+            # timeout=8  : รอผู้ป่วยเริ่มพูดได้นานขึ้น (เผื่อช้า/ตกใจ)
+            # phrase_time_limit=60 : รองรับการพูดอาการยาวๆ ได้ถึง 60 วินาที
+            audio = recognizer.listen(source, timeout=8, phrase_time_limit=60)
             print("🔄 [กำลังประมวลผลเสียง...]")
             text = recognizer.recognize_google(audio, language="th-TH")
-            print(f"✅ [ระบบได้ยิน] ผู้ป่วยพูดว่า: '{text}'")
+            print(f"✅ ผู้ป่วยพูดว่า: '{text}'")
             return text
-        except (sr.WaitTimeoutError, sr.UnknownValueError):
-            print("⚠️ [ไม่พบเสียงพูด หรือ ฟังไม่ชัดเจน]")
+        except sr.WaitTimeoutError:
+            print("⚠️ [หมดเวลารอ] ผู้ป่วยไม่ได้พูดภายใน 8 วินาที")
+            return ""
+        except sr.UnknownValueError:
+            print("⚠️ [ฟังไม่ชัดเจน] ไม่สามารถแปลงเสียงเป็นข้อความได้")
             return ""
         except Exception as e:
             print(f"⚠️ [STT Error]: {e}")
@@ -32,8 +46,7 @@ def is_safe_for_public(text):
         "hiv", "เอดส์", "วิกฤต",
     ]
 
-    # คำที่ปกติน่า block แต่ถ้าอยู่ใน clinical context ให้ผ่านได้
-    # tuple: (คำ sensitive, [คำ context ที่แสดงว่าเป็น clinical summary ปกติ])
+    # คำที่ block เฉพาะเมื่อไม่มี clinical context ขยายความ
     clinical_whitelist_patterns = [
         ("หัวใจ",   ["cardiac", "concern", "chest", "หน้าอก", "guarding", "observation", "triage", "หัวใจเต้น"]),
         ("ฉุกเฉิน", ["triage", "assessment", "observation", "clinical", "guarding"]),
@@ -41,12 +54,10 @@ def is_safe_for_public(text):
 
     text_lower = text.lower()
 
-    # เช็ค sensitive keywords ทั่วไป
     for keyword in sensitive_keywords:
         if keyword in text_lower:
             return False, keyword
 
-    # เช็ค whitelist patterns: block เฉพาะเมื่อไม่มี clinical context
     for sensitive_word, allowed_context_words in clinical_whitelist_patterns:
         if sensitive_word in text_lower:
             is_clinical_context = any(ctx in text_lower for ctx in allowed_context_words)
