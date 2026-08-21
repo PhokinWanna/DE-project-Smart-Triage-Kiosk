@@ -13,9 +13,9 @@ def listen_to_patient():
     # --- FIX: ค่า default ของ pause_threshold คือ 0.8 วินาที
     # ถ้าผู้ป่วยหยุดพักระหว่างประโยคแค่ 0.8s ระบบจะตัดเสียงทันที
     # เพิ่มเป็น 2.5s เพื่อให้พูดได้ยาวขึ้นโดยไม่ถูกตัดกลางคัน
-    recognizer.pause_threshold = 2.5          # วินาที silence ก่อนตัด
-    recognizer.non_speaking_duration = 2.5   # ต้องตรงกับ pause_threshold เสมอ
-    recognizer.phrase_threshold = 0.3        # ความไวในการเริ่มจับเสียง (default 0.3 ดีอยู่แล้ว)
+    recognizer.pause_threshold = 2.5         
+    recognizer.non_speaking_duration = 2.5   # always = pause_threshold
+    recognizer.phrase_threshold = 0.3        
 
     with sr.Microphone() as source:
         print("\n" + "="*50)
