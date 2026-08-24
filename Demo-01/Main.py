@@ -4,7 +4,6 @@ import math
 import time
 import numpy as np
 
-# --- Import Custom Modules ---
 from V_Module import calculate_angle, check_intersection
 from R_Module import call_llama_reasoning
 from A_Module import listen_to_patient, handle_output_guardrail, speak_audio
