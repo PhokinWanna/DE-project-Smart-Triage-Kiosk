@@ -5,24 +5,16 @@ import csv
 import math
 import numpy as np
 
-# กำหนด Path ของ Dataset
 DATASET_DIR = "dataset"
-CATEGORIES = ["Normal", "Pallor", "Flushing"]
-OUTPUT_CSV = "skin_dataset.csv"
+CATEGORIES = ["Normal", "Flushing"] # เพิ่ม Pallor ได้ถ้าหา Data ได้
+OUTPUT_CSV = "skin_dataset_dynamic1.csv"
 
-mp_pose = mp.solutions.pose
+mp_face_mesh = mp.solutions.face_mesh
 
 def calculate_fitzpatrick(l_val, b_val):
-    """คำนวณ ITA และจัดกลุ่ม Fitzpatrick Scale"""
-    # ป้องกัน error กรณี b_val เป็น 0
     if b_val == 0: b_val = 0.001 
-    
-    # OpenCV เก็บ L* ในช่วง 0-255 (เราต้องแปลงกลับเป็น 0-100 ตามมาตรฐาน CIELab)
-    # OpenCV เก็บ a*, b* ในช่วง 0-255 (เราต้องแปลงกลับเป็น -127 ถึง 127)
     real_L = (l_val * 100) / 255.0
     real_B = b_val - 128.0
-
-    # สมการ ITA
     ita = math.atan((real_L - 50.0) / real_B) * (180.0 / math.pi)
 
     if ita > 55: return ita, "Type_I"
@@ -33,22 +25,17 @@ def calculate_fitzpatrick(l_val, b_val):
     else: return ita, "Type_VI"
 
 def process_images():
-    print(f"กำลังเริ่มสกัด Feature จากภาพในโฟลเดอร์ {DATASET_DIR}...")
+    print(f"กำลังเริ่มสกัด Feature (Dynamic ROI - แก้มซ้าย, ขวา, หน้าผาก) จากโฟลเดอร์ {DATASET_DIR}...")
     
-    # เปิดไฟล์ CSV เพื่อเตรียมเขียนข้อมูล
     with open(OUTPUT_CSV, mode='w', newline='', encoding='utf-8') as file:
         writer = csv.writer(file)
-        # เขียน Header ของตาราง
         writer.writerow(["Filename", "Label", "L_mean", "A_mean", "B_mean", "ITA_Angle", "Fitzpatrick"])
 
-        with mp_pose.Pose(static_image_mode=True, min_detection_confidence=0.5) as pose:
+        with mp_face_mesh.FaceMesh(static_image_mode=True, max_num_faces=1, refine_landmarks=False) as face_mesh:
             for category in CATEGORIES:
                 folder_path = os.path.join(DATASET_DIR, category)
-                if not os.path.exists(folder_path):
-                    print(f"⚠️ ไม่พบโฟลเดอร์: {folder_path} ข้ามการทำงาน...")
-                    continue
+                if not os.path.exists(folder_path): continue
 
-                # วนลูปอ่านทุกไฟล์ในโฟลเดอร์
                 for filename in os.listdir(folder_path):
                     if filename.lower().endswith(('.png', '.jpg', '.jpeg')):
                         img_path = os.path.join(folder_path, filename)
@@ -57,39 +44,64 @@ def process_images():
 
                         h, w, _ = image.shape
                         image_rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
-                        results = pose.process(image_rgb)
+                        results = face_mesh.process(image_rgb)
 
-                        # ถ้าเจอใบหน้า/โครงร่าง
-                        if results.pose_landmarks:
-                            landmarks = results.pose_landmarks.landmark
-                            nose = landmarks[0]
-                            r_eye = landmarks[5]
-                            r_ear = landmarks[8]
+                        if not results.multi_face_landmarks:
+                            print(f"❌ [REJECT] หาหน้าไม่เจอ: {filename}")
+                            continue
 
-                            # คำนวณพิกัดแก้มขวา
-                            r_cheek_x = int((r_eye.x + nose.x + r_ear.x) / 3 * w)
-                            r_cheek_y = int((r_eye.y + nose.y + r_ear.y) / 3 * h)
-                            box_size = 15
+                        landmarks = results.multi_face_landmarks[0].landmark
+                        
+                        # พิกัดโครงสร้างหลัก
+                        nose = landmarks[1]
+                        l_ear = landmarks[454]
+                        r_ear = landmarks[234]
+                        l_eye = landmarks[263]
+                        r_eye = landmarks[33]
+                        forehead = landmarks[151] # จุดกึ่งกลางหน้าผาก
 
-                            # ครอปพื้นที่แก้ม
-                            roi = image[max(0, r_cheek_y-box_size):min(h, r_cheek_y+box_size),
-                                        max(0, r_cheek_x-box_size):min(w, r_cheek_x+box_size)]
+                        # DYNAMIC BOX SIZE: 12% ของความกว้างหน้า
+                        face_width_px = abs((r_ear.x - l_ear.x) * w)
+                        box_size = int(face_width_px * 0.12)
 
-                            if roi.size != 0:
-                                # แปลงเป็น CIELab
-                                lab_roi = cv2.cvtColor(roi, cv2.COLOR_BGR2LAB)
-                                l_mean = np.mean(lab_roi[:, :, 0])
-                                a_mean = np.mean(lab_roi[:, :, 1])
-                                b_mean = np.mean(lab_roi[:, :, 2])
+                        # คำนวณพิกัดกึ่งกลางของ 3 จุด (แก้มขวา, แก้มซ้าย, หน้าผาก)
+                        r_cheek_x = int((r_eye.x + nose.x + r_ear.x) / 3 * w)
+                        r_cheek_y = int((r_eye.y + nose.y + r_ear.y) / 3 * h)
+                        
+                        l_cheek_x = int((l_eye.x + nose.x + l_ear.x) / 3 * w)
+                        l_cheek_y = int((l_eye.y + nose.y + l_ear.y) / 3 * h)
 
-                                # คัดแยก Fitzpatrick
-                                ita_angle, fitz_type = calculate_fitzpatrick(l_mean, b_mean)
+                        f_x = int(forehead.x * w)
+                        f_y = int(forehead.y * h)
 
-                                # บันทึกลงตาราง
-                                writer.writerow([filename, category, round(l_mean, 2), round(a_mean, 2), round(b_mean, 2), round(ita_angle, 2), fitz_type])
-                                print(f"✅ ประมวลผล: {filename} | Type: {fitz_type} | Label: {category}")
+                        # BOUNDARY CHECK: เช็คว่าขอบกล่องของทั้ง 3 จุดทะลุขอบรูปหรือไม่
+                        if (r_cheek_x - box_size < 0 or r_cheek_x + box_size > w or r_cheek_y - box_size < 0 or r_cheek_y + box_size > h or
+                            l_cheek_x - box_size < 0 or l_cheek_x + box_size > w or l_cheek_y - box_size < 0 or l_cheek_y + box_size > h or
+                            f_x - box_size < 0 or f_x + box_size > w or f_y - box_size < 0 or f_y + box_size > h):
+                            print(f"⚠️ [REJECT] หน้าแหว่ง/ล้นขอบภาพ (โดนตัดบริเวณแก้มหรือหน้าผาก): {filename}")
+                            continue
 
-    print(f"\n🎉 สกัดข้อมูลเสร็จสิ้น! บันทึกผลลัพธ์ไว้ที่: {OUTPUT_CSV}")
+                        # CROP ทั้ง 3 จุด
+                        r_roi = image[r_cheek_y-box_size:r_cheek_y+box_size, r_cheek_x-box_size:r_cheek_x+box_size]
+                        l_roi = image[l_cheek_y-box_size:l_cheek_y+box_size, l_cheek_x-box_size:l_cheek_x+box_size]
+                        f_roi = image[f_y-box_size:f_y+box_size, f_x-box_size:f_x+box_size]
+
+                        if r_roi.size != 0 and l_roi.size != 0 and f_roi.size != 0:
+                            # รวมพิกเซลทั้ง 3 ส่วนเข้าด้วยกันแบบแนวนอน
+                            combined_roi = np.concatenate((r_roi, l_roi, f_roi), axis=1)
+                            
+                            # แปลงเป็น CIELab และหาค่าเฉลี่ยจากพิกเซลทั้งหมด (3 จุดรวมกัน)
+                            lab_roi = cv2.cvtColor(combined_roi, cv2.COLOR_BGR2LAB)
+                            l_mean = np.mean(lab_roi[:, :, 0])
+                            a_mean = np.mean(lab_roi[:, :, 1])
+                            b_mean = np.mean(lab_roi[:, :, 2])
+
+                            ita_angle, fitz_type = calculate_fitzpatrick(l_mean, b_mean)
+
+                            writer.writerow([filename, category, round(l_mean, 2), round(a_mean, 2), round(b_mean, 2), round(ita_angle, 2), fitz_type])
+                            print(f"✅ [SUCCESS] {filename} | A*: {a_mean:.2f} | Type: {fitz_type}")
+
+    print(f"\n🎉 สกัด Dataset สำเร็จ! บันทึกที่: {OUTPUT_CSV}")
 
 if __name__ == "__main__":
     process_images()

@@ -1,3 +1,7 @@
 venv/
 OldTest/
-Demo-01/__pycache__/
+DataSet-Archive/
+venv_gemini/
+Train-dataset/dataset/Flushing
+Train-dataset/dataset/Normal
+Call-API.py
