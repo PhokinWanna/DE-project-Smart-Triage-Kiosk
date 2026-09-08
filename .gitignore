@@ -3,5 +3,5 @@ OldTest/
 DataSet-Archive/
 venv_gemini/
 Train-dataset/dataset/
-Train-dataset/cnn_dataset/
 Call-API.py
+# Train-dataset/Train-02-CNN/cnn_dataset/
