@@ -2,6 +2,6 @@ venv/
 OldTest/
 DataSet-Archive/
 venv_gemini/
-# Train-dataset/dataset/Flushing
-# Train-dataset/dataset/Normal
+Train-dataset/dataset/
+Train-dataset/cnn_dataset/
 Call-API.py
