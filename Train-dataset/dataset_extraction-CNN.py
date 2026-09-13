@@ -1,270 +1,178 @@
 import os
 import cv2
-import mediapipe as mp
 import numpy as np
+import mediapipe as mp
 
-# ---------------------------------------------------------------------------
-# Configuration
-# ---------------------------------------------------------------------------
-INPUT_DIR = "dataset"            # Source images: dataset/Normal, dataset/Flushing
-OUTPUT_DIR = "cnn_dataset"      # Destination folder
-CATEGORIES = ["Normal", "Flushing"]
-PATCH_SIZE = 64
+# ==========================================
+# CONFIGURATION & CONSTANTS
+# ==========================================
+PATCH_SIZE = 64              # ขนาดภาพสำหรับ CNN (64x64)
+MIN_SKIN_RATIO = 0.70        # สัดส่วนเนื้อผิวหนังขั้นต่ำใน Patch
+MAX_YAW_THRESHOLD = 0.25     # เกณฑ์มุมหันหน้า
 
-FOREHEAD_HEIGHT_RATIO = 0.35
-FOREHEAD_TOP_EXPAND = 0.08
+# Landmark IDs สำหรับตำแหน่งบนใบหน้า (MediaPipe Face Mesh)
+NOSE_ID = 1                  # ปลายจมูก
+FOREHEAD_ID = 10             # กลางหน้าผาก
+CHEEK_L_EDGE_ID = 234        # ขอบแก้มซ้าย
+CHEEK_R_EDGE_ID = 454        # ขอบแก้มขวา
+CHEEK_L_ID = 117             # โหนกแก้มซ้าย
+CHEEK_R_ID = 346             # โหนกแก้มขวา
 
-MIN_ZONE_WIDTH = 25
-MIN_ZONE_HEIGHT = 20
-MIN_SKIN_PIXELS = 350
-
-NOSE_TIP_IDX = 1
-LEFT_EYE_OUTER_IDX = 33
-RIGHT_EYE_OUTER_IDX = 263
-
-Y_AXIS = 1
-X_AXIS = 0
+DATASET_DIR = "dataset"
+OUTPUT_DIR = "cnn_dataset"
 
 mp_face_mesh = mp.solutions.face_mesh
+face_mesh = mp_face_mesh.FaceMesh(
+    static_image_mode=True,
+    max_num_faces=1,
+    refine_landmarks=True,
+    min_detection_confidence=0.5
+)
+
+# ==========================================
+# HELPER FUNCTIONS
+# ==========================================
+def is_valid_skin_color(patch_bgr):
+    """
+    ตรวจสอบว่า Patch เป็นสีผิวคนจริง (ตัดสีเขียว/ฟ้า/มืด/แสงสะท้อนจ้า)
+    """
+    if patch_bgr is None:
+        return False
+        
+    h_patch, w_patch = patch_bgr.shape[:2]
+    if h_patch != PATCH_SIZE or w_patch != PATCH_SIZE:
+        return False
+
+    # แยก Channel ด้วย cv2.split
+    b_chan, g_chan, r_chan = cv2.split(patch_bgr)
+
+    r_mean = float(np.mean(r_chan))
+    g_mean = float(np.mean(g_chan))
+    b_mean = float(np.mean(b_chan))
+
+    # 1. กฎผิวคน: สีแดงต้องเด่นกว่าสีน้ำเงิน
+    if b_mean >= r_mean:
+        return False
+
+    # 2. ป้องกันภาพมืดจัด หรือขาวจ้าเกินไป
+    if r_mean < 40 or (r_mean > 245 and g_mean > 245 and b_mean > 245):
+        return False
+
+    # 3. ตรวจสอบเม็ดสีผิวผ่าน YCrCb
+    ycrcb = cv2.cvtColor(patch_bgr, cv2.COLOR_BGR2YCrCb)
+    y_chan, cr_chan, cb_chan = cv2.split(ycrcb)
+
+    skin_mask = (cr_chan >= 133) & (cr_chan <= 173) & (cb_chan >= 77) & (cb_chan <= 127)
+    skin_ratio = float(np.sum(skin_mask)) / float(PATCH_SIZE * PATCH_SIZE)
+
+    return skin_ratio >= MIN_SKIN_RATIO
 
 
-def create_dirs():
-    if not os.path.exists(OUTPUT_DIR):
-        os.makedirs(OUTPUT_DIR)
-    for cat in CATEGORIES:
-        path = os.path.join(OUTPUT_DIR, cat)
-        if not os.path.exists(path):
-            os.makedirs(path)
+def extract_square_patch(image_bgr, center_x, center_y, patch_size=64):
+    """
+    Crop ภาพสี่เหลี่ยมจัตุรัส patch_size x patch_size โดยไม่บิดสัดส่วน
+    """
+    h, w = image_bgr.shape[:2]
+    half = patch_size // 2
 
+    x1 = int(center_x - half)
+    y1 = int(center_y - half)
+    x2 = x1 + patch_size
+    y2 = y1 + patch_size
 
-def get_indices_from_edges(edges):
-    indices = set()
-    for start_node, end_node in edges:
-        indices.add(int(start_node))
-        indices.add(int(end_node))
-    return list(indices)
-
-
-def get_expanded_face_points(landmarks, face_oval_indices, w_img, h_img, top_expand_ratio=0.0):
-    pts = []
-    for idx in face_oval_indices:
-        pts.append([int(landmarks[idx].x * w_img), int(landmarks[idx].y * h_img)])
-    pts = np.array(pts, dtype=np.int32)
-
-    if top_expand_ratio > 0:
-        _, y, _, h = cv2.boundingRect(pts)
-        dy = int(h * top_expand_ratio)
-        threshold_y = y + int(h * 0.25)
-        for row in pts:
-            curr_y = row[Y_AXIS]
-            if curr_y < threshold_y:
-                factor = (threshold_y - curr_y) / max(1, (threshold_y - y))
-                row[Y_AXIS] = max(0, curr_y - int(dy * factor))
-    return pts
-
-
-def draw_polygon_hull(mask, pts, color):
-    if len(pts) > 2:
-        hull = cv2.convexHull(pts)
-        cv2.fillConvexPoly(mask, hull, color)
-
-
-def draw_feature_hull(mask, landmarks, indices, w_img, h_img, color):
-    pts = []
-    for idx in indices:
-        pts.append([int(landmarks[idx].x * w_img), int(landmarks[idx].y * h_img)])
-    pts = np.array(pts, dtype=np.int32)
-    draw_polygon_hull(mask, pts, color)
-
-
-def get_bbox_from_mask(mask):
-    rows = np.any(mask, axis=Y_AXIS)
-    cols = np.any(mask, axis=X_AXIS)
-    if not (np.any(rows) and np.any(cols)):
+    if x1 < 0 or y1 < 0 or x2 > w or y2 > h:
         return None
 
-    row_indices = np.where(rows)[X_AXIS]
-    col_indices = np.where(cols)[X_AXIS]
-    min_x = int(col_indices[X_AXIS])
-    max_x = int(col_indices[-1])
-    min_y = int(row_indices[X_AXIS])
-    max_y = int(row_indices[-1])
-    return min_x, min_y, max_x - min_x, max_y - min_y
+    return image_bgr[y1:y2, x1:x2].copy()
 
 
-def detect_head_turn(landmarks, w_img, f_w):
-    nose_x = landmarks[NOSE_TIP_IDX].x * w_img
-    l_eye_x = landmarks[LEFT_EYE_OUTER_IDX].x * w_img
-    r_eye_x = landmarks[RIGHT_EYE_OUTER_IDX].x * w_img
+# ==========================================
+# MAIN EXTRACTION PIPELINE
+# ==========================================
+def process_dataset():
+    classes = ["Normal", "Flushing"]
+    valid_extensions = ('.jpg', '.jpeg', '.png')
 
-    d_left = nose_x - l_eye_x
-    d_right = r_eye_x - nose_x
+    for class_name in classes:
+        in_class_dir = os.path.join(DATASET_DIR, class_name)
+        out_class_dir = os.path.join(OUTPUT_DIR, class_name)
 
-    if d_right < 0.06 * f_w or (d_left > 0 and (d_right / max(1.0, d_left)) < 0.22):
-        return "TURNED_RIGHT"
-    elif d_left < 0.06 * f_w or (d_right > 0 and (d_left / max(1.0, d_right)) < 0.22):
-        return "TURNED_LEFT"
-    else:
-        return "FRONTAL"
+        if not os.path.exists(in_class_dir):
+            continue
+        os.makedirs(out_class_dir, exist_ok=True)
 
+        image_files = [f for f in os.listdir(in_class_dir) if f.lower().endswith(valid_extensions)]
+        saved_count = 0
 
-def extract_masked_patches():
-    create_dirs()
-    print(f"Starting Pose-Aware Patch Extraction ({PATCH_SIZE}x{PATCH_SIZE})...\n")
+        print(f"[*] Processing Class: {class_name} ({len(image_files)} files)")
 
-    total_extracted = 0
-    total_skipped_zones = 0
-    failed_files = []
-
-    face_oval = get_indices_from_edges(mp_face_mesh.FACEMESH_FACE_OVAL)
-    left_eye = get_indices_from_edges(mp_face_mesh.FACEMESH_LEFT_EYE)
-    right_eye = get_indices_from_edges(mp_face_mesh.FACEMESH_RIGHT_EYE)
-    lips = get_indices_from_edges(mp_face_mesh.FACEMESH_LIPS)
-    l_brow = get_indices_from_edges(mp_face_mesh.FACEMESH_LEFT_EYEBROW)
-    r_brow = get_indices_from_edges(mp_face_mesh.FACEMESH_RIGHT_EYEBROW)
-
-    
-
-    with mp_face_mesh.FaceMesh(static_image_mode=True, max_num_faces=1, refine_landmarks=True) as face_mesh:
-        for category in CATEGORIES:
-            folder_path = os.path.join(INPUT_DIR, category)
-            if not os.path.exists(folder_path):
+        for filename in image_files:
+            file_path = os.path.join(in_class_dir, filename)
+            
+            frame_bgr = cv2.imread(file_path)
+            if frame_bgr is None:
                 continue
 
-            for filename in os.listdir(folder_path):
-                if not filename.lower().endswith((".png", ".jpg", ".jpeg")):
-                    continue
+            h, w = frame_bgr.shape[:2]
+            frame_rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
+            results = face_mesh.process(frame_rgb)
 
-                img_path = os.path.join(folder_path, filename)
-                image = cv2.imread(img_path)
-                if image is None:
-                    continue
+            if not results.multi_face_landmarks:
+                continue
 
-                h_img, w_img, _ = image.shape
-                image_rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
-                results = face_mesh.process(image_rgb)
+            # ดึง Landmarks ของใบหน้าแรก
+            landmarks = None
+            for face in results.multi_face_landmarks:
+                landmarks = face.landmark
+                break
 
-                if not results.multi_face_landmarks:
-                    print(f"[-] Face not found: {filename}")
-                    failed_files.append(f"{category}/{filename}")
-                    continue
+            if landmarks is None:
+                continue
 
-                landmarks = results.multi_face_landmarks[0].landmark
+            # 1. ประเมินมุมหันของศีรษะ (Head Yaw)
+            nose_x = landmarks[NOSE_ID].x
+            left_cheek_edge_x = landmarks[CHEEK_L_EDGE_ID].x
+            right_cheek_edge_x = landmarks[CHEEK_R_EDGE_ID].x
 
-                # Base mask with forehead expansion
-                expanded_face_pts = get_expanded_face_points(
-                    landmarks, face_oval, w_img, h_img, top_expand_ratio=FOREHEAD_TOP_EXPAND
-                )
-                base_mask = np.zeros((h_img, w_img), dtype=np.uint8)
-                draw_polygon_hull(base_mask, expanded_face_pts, 255)
+            dist_left = abs(nose_x - left_cheek_edge_x)
+            dist_right = abs(right_cheek_edge_x - nose_x)
+            total_span = dist_left + dist_right
 
-                for feature in [left_eye, right_eye, lips, l_brow, r_brow]:
-                    draw_feature_hull(base_mask, landmarks, feature, w_img, h_img, 0)
+            skip_left = False
+            skip_right = False
 
-                f_x, f_y, f_w, f_h = cv2.boundingRect(expanded_face_pts)
-                forehead_bottom = f_y + int(f_h * FOREHEAD_HEIGHT_RATIO)
-                cheek_top = forehead_bottom
+            if total_span > 0:
+                if (dist_left / total_span) < MAX_YAW_THRESHOLD:
+                    skip_left = True
+                if (dist_right / total_span) < MAX_YAW_THRESHOLD:
+                    skip_right = True
 
-                pose_state = detect_head_turn(landmarks, w_img, f_w)
-                nose_x = int(landmarks[NOSE_TIP_IDX].x * w_img)
+            # 2. จุดศูนย์กลางของแต่ละโซน
+            forehead_pt = landmarks[FOREHEAD_ID]
+            left_cheek_pt = landmarks[CHEEK_L_ID]
+            right_cheek_pt = landmarks[CHEEK_R_ID]
 
-                mask_forehead = base_mask.copy()
-                mask_forehead[forehead_bottom:, :] = 0
+            zones_to_extract = []
+            zones_to_extract.append(("Forehead", forehead_pt.x * w, forehead_pt.y * h))
+            
+            if not skip_left:
+                zones_to_extract.append(("Zone_L", left_cheek_pt.x * w, left_cheek_pt.y * h))
+            if not skip_right:
+                zones_to_extract.append(("Zone_R", right_cheek_pt.x * w, right_cheek_pt.y * h))
 
-                mask_left = None
-                mask_right = None
+            # 3. Crop และคัดกรองคุณภาพ
+            base_name, _ = os.path.splitext(filename)
 
-                if pose_state == "TURNED_RIGHT":
-                    mask_left = base_mask.copy()
-                    mask_left[:cheek_top, :] = 0
-                elif pose_state == "TURNED_LEFT":
-                    mask_right = base_mask.copy()
-                    mask_right[:cheek_top, :] = 0
-                else:
-                    mask_left = base_mask.copy()
-                    mask_left[:cheek_top, :] = 0
-                    mask_left[:, nose_x:] = 0
+            for zone_name, cx, cy in zones_to_extract:
+                patch = extract_square_patch(frame_bgr, cx, cy, patch_size=PATCH_SIZE)
 
-                    mask_right = base_mask.copy()
-                    mask_right[:cheek_top, :] = 0
-                    mask_right[:, :nose_x] = 0
+                if is_valid_skin_color(patch):
+                    out_name = f"{base_name}_{zone_name}.jpg"
+                    out_path = os.path.join(out_class_dir, out_name)
+                    cv2.imwrite(out_path, patch)
+                    saved_count += 1
 
-                zones = [
-                    ("Forehead", mask_forehead),
-                    ("Zone_L", mask_left),
-                    ("Zone_R", mask_right),
-                ]
-
-                base_name = os.path.splitext(filename)[0]
-
-                for zone_name, zone_mask in zones:
-                    if zone_mask is None:
-                        total_skipped_zones += 1
-                        continue
-
-                    bbox = get_bbox_from_mask(zone_mask)
-                    if bbox is None:
-                        total_skipped_zones += 1
-                        continue
-
-                    # Unpack bbox dimensions cleanly
-                    x_box, y_box, w_box, h_box = bbox
-                    skin_pixels = np.count_nonzero(zone_mask)
-
-                    # Filter out narrow slivers and obstructed patches
-                    if w_box < MIN_ZONE_WIDTH or h_box < MIN_ZONE_HEIGHT or skin_pixels < MIN_SKIN_PIXELS:
-                        total_skipped_zones += 1
-                        continue
-
-                    cropped_img = image[y_box : y_box + h_box, x_box : x_box + w_box]
-                    cropped_mask = zone_mask[y_box : y_box + h_box, x_box : x_box + w_box]
-
-                    cropped_lab = cv2.cvtColor(cropped_img, cv2.COLOR_BGR2LAB)
-                    skin_lab_masked = cv2.bitwise_and(cropped_lab, cropped_lab, mask=cropped_mask)
-
-                    mean_color = cv2.mean(cropped_lab, mask=cropped_mask)[:3]
-                    skin_lab_masked[cropped_mask == 0] = mean_color
-
-                    h_crop, w_crop = skin_lab_masked.shape[:2]
-                    side = max(h_crop, w_crop)
-
-                    pad_y_top = (side - h_crop) // 2
-                    pad_y_bottom = side - h_crop - pad_y_top
-                    pad_x_left = (side - w_crop) // 2
-                    pad_x_right = side - w_crop - pad_x_left
-
-                    padded_patch = cv2.copyMakeBorder(
-                        skin_lab_masked,
-                        pad_y_top,
-                        pad_y_bottom,
-                        pad_x_left,
-                        pad_x_right,
-                        cv2.BORDER_CONSTANT,
-                        value=mean_color,
-                    )
-
-                    final_patch = cv2.resize(padded_patch, (PATCH_SIZE, PATCH_SIZE))
-
-                    save_name = f"{base_name}_{zone_name}.jpg"
-                    save_path = os.path.join(OUTPUT_DIR, category, save_name)
-                    cv2.imwrite(save_path, final_patch)
-                    total_extracted += 1
-
-                print(f"[+] Processed: {filename} ({pose_state})")
-    if failed_files:
-        log_path = os.path.join(OUTPUT_DIR, "skipped_images.txt")
-        with open(log_path, "w", encoding="utf-8") as f:
-            for item in failed_files:
-                f.write(item + "\n")
-        print(f"Recorded {len(failed_files)} undetected images in: {log_path}")
-        
-    print("\n" + "=" * 50)
-    print(f"Extraction Completed!")
-    print(f"Total pure patches extracted: {total_extracted}")
-    print(f"Total occluded/corrupted zones safely skipped: {total_skipped_zones}")
-    print(f"Output folder: {OUTPUT_DIR}")
-    print("=" * 50)
-
+        print(f"[+] Finished {class_name}: Saved {saved_count} clean patches.")
 
 if __name__ == "__main__":
-    extract_masked_patches()
+    process_dataset()
