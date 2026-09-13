@@ -4,4 +4,5 @@ DataSet-Archive/
 venv_gemini/
 Train-dataset/dataset/
 Call-API.py
-# Train-dataset/Train-02-CNN/cnn_dataset/
+Train-dataset/Train-02-CNN/cnn_dataset-01/
+Train-dataset/Train-02-CNN/cnn_dataset-02/
