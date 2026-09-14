@@ -2,7 +2,9 @@ venv/
 OldTest/
 DataSet-Archive/
 venv_gemini/
+venv_train/
 Train-dataset/dataset/
 Call-API.py
 Train-dataset/Train-02-CNN/cnn_dataset-01/
 Train-dataset/Train-02-CNN/cnn_dataset-02/
+Train-dataset/Train-02-CNN/cnn_dataset_split/
