@@ -18,7 +18,7 @@ CHEEK_R_EDGE_ID = 454        # ขอบแก้มขวา
 CHEEK_L_ID = 117             # โหนกแก้มซ้าย
 CHEEK_R_ID = 346             # โหนกแก้มขวา
 
-DATASET_DIR = "dataset"
+DATASET_DIR = "Train-dataset/dataset"
 OUTPUT_DIR = "cnn_dataset"
 
 mp_face_mesh = mp.solutions.face_mesh

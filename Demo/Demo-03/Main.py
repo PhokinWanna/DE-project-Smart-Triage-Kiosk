@@ -17,7 +17,7 @@ import time
 import numpy as np
 import logging
 
-from V_Module import calculate_angle, check_intersection
+from V_Module import calculate_angle, check_intersection, evaluate_chest_clutch, SkinClassifier
 from R_Module import call_llama_reasoning
 from A_Module import listen_to_patient, handle_output_guardrail, speak_audio,pygame
 import config
@@ -132,6 +132,8 @@ def main():
         return
     
     state = TriageKioskState()
+
+    skin_detector = SkinClassifier(model_path="Train-dataset/Train-02-CNN/skin_classifier.tflite")
     
     print("System Ready. Please step in front of the camera.")
     logger.info("System ready - waiting for patient")
@@ -159,6 +161,7 @@ def main():
                 scratch_flag = False
                 
                 if results.pose_landmarks:
+                    is_clutching, dist = evaluate_chest_clutch(results.pose_landmarks.landmark, mp_pose)
                     landmarks = results.pose_landmarks.landmark
                     
                     nose = landmarks[0]
@@ -193,6 +196,7 @@ def main():
                     ]
                     
                     if r_cheek_roi.size != 0:
+                        is_abnormal_skin, confidence = skin_detector.predict_roi(r_cheek_roi)
                         lab_roi = cv2.cvtColor(r_cheek_roi, cv2.COLOR_BGR2LAB)
                         avg_a = np.mean(lab_roi[:, :, 1])
                         
