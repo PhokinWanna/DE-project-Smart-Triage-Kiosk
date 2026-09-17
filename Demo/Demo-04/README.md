@@ -1,7 +1,7 @@
 # Change Detail
-**Enhance from Demo-03**
+***Enhance from Demo-03***
 
-**Key Improvements:**
+***Key Improvements:***
 
 - Reconstructuring Code's Architecture.
                     
