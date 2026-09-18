@@ -1,0 +1,43 @@
+Model: "CIELAB_Skin_CNN"
+_________________________________________________________________
+ Layer (type)                Output Shape              Param #   
+=================================================================
+ input_1 (InputLayer)        [(None, 64, 64, 3)]       0         
+                                                                 
+ random_flip (RandomFlip)    (None, 64, 64, 3)         0         
+                                                                 
+ random_rotation (RandomRot  (None, 64, 64, 3)         0         
+ ation)                                                          
+                                                                 
+ conv2d (Conv2D)             (None, 32, 32, 32)        896       
+                                                                 
+ batch_normalization (Batch  (None, 32, 32, 32)        128       
+ Normalization)                                                  
+                                                                 
+ separable_conv2d (Separabl  (None, 32, 32, 64)        2400      
+ eConv2D)                                                        
+                                                                 
+ batch_normalization_1 (Bat  (None, 32, 32, 64)        256       
+ chNormalization)                                                
+                                                                 
+ max_pooling2d (MaxPooling2  (None, 16, 16, 64)        0         
+ D)                                                              
+                                                                 
+ separable_conv2d_1 (Separa  (None, 16, 16, 128)       8896      
+ bleConv2D)                                                      
+                                                                 
+ batch_normalization_2 (Bat  (None, 16, 16, 128)       512       
+ chNormalization)                                                
+                                                                 
+ global_average_pooling2d (  (None, 128)               0         
+ GlobalAveragePooling2D)                                         
+                                                                 
+ dropout (Dropout)           (None, 128)               0         
+                                                                 
+ dense (Dense)               (None, 1)                 129       
+                                                                 
+=================================================================
+Total params: 13217 (51.63 KB)
+Trainable params: 12769 (49.88 KB)
+Non-trainable params: 448 (1.75 KB)
+_________________________________________________________________
