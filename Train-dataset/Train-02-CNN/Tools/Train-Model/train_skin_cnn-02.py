@@ -7,8 +7,9 @@ import os
 import cv2
 import numpy as np
 import tensorflow as tf
-from tensorflow import keras
-from tensorflow.keras import layers
+
+keras = tf.keras
+layers = tf.keras.layers
 
 IMG_SIZE = (64, 64)
 BATCH_SIZE = 32
