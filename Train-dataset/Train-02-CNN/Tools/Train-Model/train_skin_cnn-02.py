@@ -15,9 +15,15 @@ BATCH_SIZE = 32
 EPOCHS = 35
 LEARNING_RATE = 1e-4
 
-DATA_DIR = "Train-dataset/Train-02-CNN/split_dataset"
-MODEL_SAVE_PATH = "Train-dataset/Train-02-CNN/best_skin_cnn.keras"
-TFLITE_EXPORT_PATH = "Train-dataset/Train-02-CNN/skin_classifier.tflite"
+# --- FIX 1: ใช้ __file__ สร้าง absolute path แทน relative path ---
+# Script อยู่ที่: Final_Project/Train-dataset/Train-02-CNN/Tools/Train-Model/
+# ขึ้นไป 4 ระดับ จะถึง Final_Project (project root)
+SCRIPT_DIR   = os.path.dirname(os.path.abspath(__file__))
+PROJECT_ROOT = os.path.abspath(os.path.join(SCRIPT_DIR, "../../../.."))
+
+DATA_DIR         = os.path.join(PROJECT_ROOT, "Train-dataset/Train-02-CNN/split_dataset")
+MODEL_SAVE_PATH  = os.path.join(PROJECT_ROOT, "Train-dataset/Train-02-CNN/best_skin_cnn.keras")
+TFLITE_EXPORT_PATH = os.path.join(PROJECT_ROOT, "Train-dataset/Train-02-CNN/skin_classifier.tflite")
 
 # 1. Custom Dataset Loader with CIELAB Color Conversion
 def load_split(split_name):
@@ -88,7 +94,7 @@ def create_model():
 
     model = keras.Model(inputs, outputs, name="CIELAB_Skin_CNN")
     model.compile(
-        optimizer=keras.optimizers.Adam(learning_rate=LEARNING_RATE),
+        optimizer=keras.optimizers.legacy.Adam(learning_rate=LEARNING_RATE),
         loss=BinaryFocalLoss(),
         metrics=["accuracy", keras.metrics.AUC(name="auc"), keras.metrics.Recall(name="recall")]
     )
@@ -115,10 +121,26 @@ def export_quantized_tflite(model, val_images, export_path):
 
 # 5. Main Execution
 if __name__ == "__main__":
+
+    # --- ตรวจสอบ path ก่อนเริ่ม ---
+    print(f"[*] DATA_DIR resolves to:\n    {DATA_DIR}")
+    if not os.path.exists(DATA_DIR):
+        raise FileNotFoundError(
+            f"\n[ERROR] ไม่พบ dataset folder:\n    {DATA_DIR}\n"
+            f"กรุณาตรวจสอบว่า split_dataset/ อยู่ที่นั่นจริง"
+        )
+
     print("Loading datasets...")
     X_train, y_train = load_split("train")
     X_val, y_val = load_split("val")
     print(f"Train samples: {len(X_train)} | Validation samples: {len(X_val)}")
+
+    if len(X_train) == 0:
+        raise ValueError(
+            "[ERROR] Train set ว่างเปล่า — ตรวจสอบว่า folder ข้างในชื่อตรงกับ class_mapping:\n"
+            "  split_dataset/train/Normal/\n"
+            "  split_dataset/train/Flushing/"
+        )
 
     model = create_model()
     callbacks = [
@@ -258,7 +280,7 @@ if __name__ == "__main__":
     ax6.grid(True, alpha=0.3)
 
     plt.tight_layout()
-    report_path = "Train-dataset/Train-02-CNN/training_report.png"
+    report_path = os.path.join(PROJECT_ROOT, "Train-dataset/Train-02-CNN/training_report.png")
     plt.savefig(report_path, dpi=300, bbox_inches='tight')
     print(f"\n[+] Training report saved to: {report_path}")
     plt.close()
@@ -266,7 +288,7 @@ if __name__ == "__main__":
     # ==========================================
     # 6.4 Model Architecture Summary
     # ==========================================
-    arch_report_path = "Train-dataset/Train-02-CNN/model_architecture.txt"
+    arch_report_path = os.path.join(PROJECT_ROOT, "Train-dataset/Train-02-CNN/model_architecture.txt")
     with open(arch_report_path, 'w') as f:
         model.summary(print_fn=lambda x: f.write(x + '\n'))
     print(f"[+] Model architecture saved to: {arch_report_path}")
@@ -291,7 +313,7 @@ if __name__ == "__main__":
         'TFLite Size': f"{os.path.getsize(TFLITE_EXPORT_PATH) / (1024*1024):.2f} MB"
     }
 
-    summary_report_path = "Train-dataset/Train-02-CNN/metrics_summary.txt"
+    summary_report_path = os.path.join(PROJECT_ROOT, "Train-dataset/Train-02-CNN/metrics_summary.txt")
     with open(summary_report_path, 'w') as f:
         f.write("="*60 + "\n")
         f.write("SKIN ANOMALY CNN - VALIDATION METRICS SUMMARY\n")
