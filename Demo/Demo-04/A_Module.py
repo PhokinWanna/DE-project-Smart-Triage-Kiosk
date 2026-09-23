@@ -14,7 +14,7 @@ from config import SystemConfig
 
 class AudioEngine:
     def __init__(self):
-        print("[*] Initializing Speech Recognition & Audio Playback Subsystems...")
+        print("[*] Initializing Speech Recognistion & Audio Playback Subsystems...")
         self.recognizer = sr.Recognizer()
         self.recognizer.pause_threshold = SystemConfig.SPEECH_PAUSE_THRESHOLD
         self.recognizer.energy_threshold = SystemConfig.SPEECH_ENERGY_THRESHOLD

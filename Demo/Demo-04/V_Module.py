@@ -46,8 +46,8 @@ class VisionEngine:
         model_path = SystemConfig.TFLITE_SKIN_MODEL_PATH
         if os.path.exists(model_path):
             try:
-                import tensorflow as tf
-                self.tflite_interpreter = tf.lite.Interpreter(model_path=model_path)
+                from ai_edge_litert.interpreter import Interpreter
+                self.tflite_interpreter = Interpreter(msodel_path=model_path)
                 self.tflite_interpreter.allocate_tensors()
                 print(f"[+] Loaded TFLite Skin CNN Model from: {model_path}")
             except Exception as e:
@@ -133,7 +133,7 @@ class VisionEngine:
 
         # Confirm patient presence
         self.presence_counter += 1
-        if self.presence_counter >= SystemConfig.PRESENCE_DETECTION_CONFIRM_FRAMES:
+        if self.presence_counter >= SystemConfig.PRESENCE_FRAMES_TRIGGER:
             telemetry["patient_present"] = True
 
         landmarks = pose_res.pose_landmarks.landmark

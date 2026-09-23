@@ -15,7 +15,7 @@ from R_Module import ReasoningEngine
 
 class ReceptionistTriageKiosk:
     def __init__(self):
-        print(">> Powering on Stark Industries Smart Reception Kiosk...")
+        print(">> Powering on Reception Kiosk...")
         self.vision = VisionEngine()
         self.audio = AudioEngine()
         self.reasoning = ReasoningEngine()
