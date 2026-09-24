@@ -172,7 +172,7 @@ class VisionEngine:
             telemetry["patient_present"] = True
 
         landmarks = pose_res.pose_landmarks.landmark
-        get_pt = lambda lm: np.array([lm.x * w, lm.y * h])
+        get_pt = lambda lm: np.array([float(lm.x * w), float(lm.y * h)])
 
         # Anatomical Joint Landmarks
         l_sh = get_pt(landmarks[self.mp_pose.PoseLandmark.LEFT_SHOULDER])
@@ -189,12 +189,17 @@ class VisionEngine:
         chest_center = (l_sh + r_sh) / 2.0
         navel_center = (l_hip + r_hip) / 2.0
 
-        # Torso Length: Scale Invariance Vector
-        torso_vector_length = np.linalg.norm(chest_center - navel_center) + 1e-6
+        # Robust Torso Scale Invariance (Handles sitting patients with cut-off hips)
+        shoulder_width = float(np.linalg.norm(l_sh - r_sh)) + 1e-6
+        raw_torso = float(np.linalg.norm(chest_center - navel_center))
+        
+        # If hips are off-screen at the bottom border, scale derived from shoulder width
+        if raw_torso < (shoulder_width * 0.8) or navel_center[-1] >= (h - 25):
+            torso_length = shoulder_width * 1.3
+        else:
+            torso_length = raw_torso + 1e-6
 
-        # Normalized Metric Distances
-        l_wrist_chest = np.linalg.norm(l_wr - chest_center) / torso_vector_length
-        r_wrist_chest = np.linalg.norm(r_wr - chest_center) / torso_vector_length
+        # Elbow Flexion Angles
         l_elbow_ang = self._calculate_angle(l_sh, l_el, l_wr)
         r_elbow_ang = self._calculate_angle(r_sh, r_el, r_wr)
 
@@ -202,43 +207,77 @@ class VisionEngine:
         # FILTER 1: Crossed Arms Filter
         # Both forearms folded symmetrically across opposite elbows
         # -------------------------------------------------------------
-        l_tuck = np.linalg.norm(l_wr - r_el) / torso_vector_length < SystemConfig.CROSSED_ARMS_WRIST_RATIO
-        r_tuck = np.linalg.norm(r_wr - l_el) / torso_vector_length < SystemConfig.CROSSED_ARMS_WRIST_RATIO
-        is_crossed_arms = l_tuck and r_tuck
+        l_tuck = float(np.linalg.norm(l_wr - r_el) / torso_length) < SystemConfig.CROSSED_ARMS_WRIST_RATIO
+        r_tuck = float(np.linalg.norm(r_wr - l_el) / torso_length) < SystemConfig.CROSSED_ARMS_WRIST_RATIO
+        is_crossed_arms = bool(l_tuck and r_tuck)
 
         if is_crossed_arms:
             telemetry["active_filters"].append("CROSSED_ARMS_FILTER")
 
         # -------------------------------------------------------------
-        # FILTER 2: Thinking Pose Filter
-        # Forearm angle upright (>= 65°) with wrist near chin/mandible
+        # FILTER 2: Thinking Pose Filter (Hand on Chin / Mouth / Jaw)
         # -------------------------------------------------------------
-        l_forearm_ang = np.degrees(np.arctan2(abs(l_wr - l_el), abs(l_wr[0] - l_el[0]) + 1e-6))
-        r_forearm_ang = np.degrees(np.arctan2(abs(r_wr - r_el), abs(r_wr[0] - r_el[0]) + 1e-6))
-        
-        l_chin_dist = np.linalg.norm(l_wr - nose) / torso_vector_length
-        r_chin_dist = np.linalg.norm(r_wr - nose) / torso_vector_length
+        l_diff = np.abs(l_wr - l_el)
+        r_diff = np.abs(r_wr - r_el)
+        l_forearm_ang = float(np.degrees(np.arctan2(l_diff[-1], l_diff[0] + 1e-6)))
+        r_forearm_ang = float(np.degrees(np.arctan2(r_diff[-1], r_diff[0] + 1e-6)))
 
-        is_thinking = (l_chin_dist < SystemConfig.HEADACHE_HEAD_RATIO and l_forearm_ang >= SystemConfig.THINKING_FOREARM_MIN_ANGLE) or \
-                      (r_chin_dist < SystemConfig.HEADACHE_HEAD_RATIO and r_forearm_ang >= SystemConfig.THINKING_FOREARM_MIN_ANGLE)
+        l_chin_dist = float(np.linalg.norm(l_wr - nose) / torso_length)
+        r_chin_dist = float(np.linalg.norm(r_wr - nose) / torso_length)
+
+        # Hand near chin/jaw with vertical forearm
+        is_thinking = bool(
+            (l_chin_dist < 0.35 and l_forearm_ang >= SystemConfig.THINKING_FOREARM_MIN_ANGLE) or
+            (r_chin_dist < 0.35 and r_forearm_ang >= SystemConfig.THINKING_FOREARM_MIN_ANGLE)
+        )
 
         if is_thinking:
             telemetry["active_filters"].append("THINKING_POSE_FILTER")
 
-        # Raw Posture Evaluations
-        raw_chest = (not is_crossed_arms) and (
-            (l_wrist_chest <= SystemConfig.CHEST_PAIN_TORSO_RATIO and l_elbow_ang <= SystemConfig.ELBOW_FLEXION_MAX_ANGLE) or
-            (r_wrist_chest <= SystemConfig.CHEST_PAIN_TORSO_RATIO and r_elbow_ang <= SystemConfig.ELBOW_FLEXION_MAX_ANGLE)
+        # -------------------------------------------------------------
+        # CLINICAL CHEST PAIN ZONE (STRICT ANATOMICAL BOUNDS)
+        # -------------------------------------------------------------
+        # Wrist MUST be strictly BELOW the shoulder line (Never on chin/face!)
+        # Wrist MUST be ABOVE the navel line (Not on lap or abdomen)
+        # Must NOT be crossed arms and must NOT be a thinking pose
+        l_wrist_y = l_wr[-1]
+        r_wrist_y = r_wr[-1]
+        shoulder_y = chest_center[-1]
+        navel_y = navel_center[-1]
+
+        l_is_below_clavicle = (l_wrist_y > (shoulder_y + 10)) and (l_wrist_y < navel_y)
+        r_is_below_clavicle = (r_wrist_y > (shoulder_y + 10)) and (r_wrist_y < navel_y)
+
+        l_wrist_chest = float(np.linalg.norm(l_wr - chest_center) / torso_length)
+        r_wrist_chest = float(np.linalg.norm(r_wr - chest_center) / torso_length)
+
+        raw_chest = (not is_crossed_arms) and (not is_thinking) and bool(
+            (l_is_below_clavicle and l_wrist_chest <= SystemConfig.CHEST_PAIN_TORSO_RATIO and l_elbow_ang <= SystemConfig.ELBOW_FLEXION_MAX_ANGLE) or
+            (r_is_below_clavicle and r_wrist_chest <= SystemConfig.CHEST_PAIN_TORSO_RATIO and r_elbow_ang <= SystemConfig.ELBOW_FLEXION_MAX_ANGLE)
         )
 
-        raw_abdo = (not is_crossed_arms) and (
-            np.linalg.norm(l_wr - navel_center) / torso_vector_length <= SystemConfig.ABDOMEN_PAIN_TORSO_RATIO or
-            np.linalg.norm(r_wr - navel_center) / torso_vector_length <= SystemConfig.ABDOMEN_PAIN_TORSO_RATIO
+        # -------------------------------------------------------------
+        # CLINICAL ABDOMINAL GUARDING ZONE
+        # -------------------------------------------------------------
+        l_is_at_navel = (l_wrist_y >= (navel_y - (torso_length * 0.2))) and (l_wrist_y <= (navel_y + (torso_length * 0.4)))
+        r_is_at_navel = (r_wrist_y >= (navel_y - (torso_length * 0.2))) and (r_wrist_y <= (navel_y + (torso_length * 0.4)))
+
+        raw_abdo = (not is_crossed_arms) and bool(
+            (l_is_at_navel and float(np.linalg.norm(l_wr - navel_center) / torso_length) <= SystemConfig.ABDOMEN_PAIN_TORSO_RATIO) or
+            (r_is_at_navel and float(np.linalg.norm(r_wr - navel_center) / torso_length) <= SystemConfig.ABDOMEN_PAIN_TORSO_RATIO)
         )
 
-        raw_head = (not is_thinking) and (
-            np.linalg.norm(l_wr - nose) / torso_vector_length <= SystemConfig.HEADACHE_HEAD_RATIO or
-            np.linalg.norm(r_wr - nose) / torso_vector_length <= SystemConfig.HEADACHE_HEAD_RATIO
+        # -------------------------------------------------------------
+        # CRANIAL DISTRESS (HEADACHE) - FOREHEAD / TEMPLES ONLY
+        # -------------------------------------------------------------
+        # Wrist must be at or above eye level, not scratching the back of the neck
+        nose_y = nose[-1]
+        l_is_at_head = (l_wrist_y <= (nose_y + 15)) and (l_wrist_y >= (nose_y - (torso_length * 0.5)))
+        r_is_at_head = (r_wrist_y <= (nose_y + 15)) and (r_wrist_y >= (nose_y - (torso_length * 0.5)))
+
+        raw_head = (not is_thinking) and bool(
+            (l_is_at_head and l_chin_dist <= SystemConfig.HEADACHE_HEAD_RATIO) or
+            (r_is_at_head and r_chin_dist <= SystemConfig.HEADACHE_HEAD_RATIO)
         )
 
         # -------------------------------------------------------------
@@ -277,22 +316,20 @@ class VisionEngine:
         # Draw Visual Overlays on Skeleton View
         self.mp_draw.draw_landmarks(skeleton_view, pose_res.pose_landmarks, self.mp_pose.POSE_CONNECTIONS)
 
-        # Pain zone indicators
+        # Visual Indicators on Skeleton View
         if telemetry["chest_clutching"]:
-            cv2.circle(skeleton_view, tuple(chest_center.astype(int)), int(torso_vector_length * 0.35), (0, 0, 255), 3)
+            cv2.circle(skeleton_view, tuple(chest_center.astype(int)), int(torso_length * 0.35), (0, 0, 255), 3)
             cv2.putText(skeleton_view, "SIGN: ACUTE CHEST DISTRESS", (30, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 0, 255), 2)
         elif telemetry["abdominal_clutching"]:
-            cv2.circle(skeleton_view, tuple(navel_center.astype(int)), int(torso_vector_length * 0.35), (0, 165, 255), 3)
+            cv2.circle(skeleton_view, tuple(navel_center.astype(int)), int(torso_length * 0.35), (0, 165, 255), 3)
             cv2.putText(skeleton_view, "SIGN: ABDOMINAL GUARDING", (30, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 165, 255), 2)
         elif telemetry["head_clutching"]:
-            cv2.circle(skeleton_view, tuple(nose.astype(int)), int(torso_vector_length * 0.25), (255, 0, 255), 3)
+            cv2.circle(skeleton_view, tuple(nose.astype(int)), int(torso_length * 0.25), (255, 0, 255), 3)
             cv2.putText(skeleton_view, "SIGN: CRANIAL PAIN", (30, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 0, 255), 2)
 
-        # Skin status indicator
         if telemetry["skin_status"] == "RED_FLUSHING":
             cv2.putText(skeleton_view, "CNN SKIN: ERYTHEMA / FLUSHING", (30, 100), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
 
-        # Active false-positive filter status
         if telemetry["active_filters"]:
             f_label = ", ".join(telemetry["active_filters"])
             cv2.putText(skeleton_view, f"FILTER ACTIVE: {f_label}", (30, h - 30), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 0), 2)

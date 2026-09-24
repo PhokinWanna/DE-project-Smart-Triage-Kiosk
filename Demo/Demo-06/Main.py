@@ -1,6 +1,6 @@
 """
-Main.py - Master Kiosk Orchestrator (Step 5)
-Wake-Word Gated FSM, Interactive OPQRST Probing, Acute Preemption, and Conveyor Belt Spooler.
+Main.py - Master Kiosk Orchestrator (Final Production)
+Wake-Word FSM, Turn-Taking Micro-Dialogue, Acute Preemption, and Conveyor Belt Outbox.
 """
 
 import os
@@ -78,7 +78,7 @@ class SmartReceptionTriageKiosk:
         self.audio = AudioEngine()
         self.reasoning = ReasoningEngine()
 
-        # Heartbeat tracking for long idle periods
+        # VRAM Keep-Alive Heartbeat Timer
         self.last_heartbeat = time.time()
 
         # Arm the Conveyor Belt Outbox Worker
@@ -179,28 +179,28 @@ class SmartReceptionTriageKiosk:
         try:
             while self.running:
                 # -------------------------------------------------------------
-                # 1. State: PREPARE_STANDBY (Wake-Word Gate)
+                # 1. State: PREPARE_STANDBY (Wake-Word Gate & Heartbeat)
                 # -------------------------------------------------------------
                 if self.current_state == KioskState.PREPARE_STANDBY:
-                    # Keep-Alive Heartbeat: Pings the engine every 4 minutes if idle
+                    # 4-Minute VRAM Keep-Alive Heartbeat
                     if (time.time() - self.last_heartbeat) >= 240.0:
                         print("[*] [Heartbeat]: Refreshing VRAM residency...")
                         self.reasoning.warmup()
-                        self.last_heartbeat = time.time()   
-                    
+                        self.last_heartbeat = time.time()
 
                     with self.telemetry_lock:
                         patient_in_zone = self.latest_telemetry.get("patient_present", False)
 
                     if patient_in_zone:
-                        print("[*] Patient in triage zone. Listening for wake trigger ('สวัสดี' / 'Hello')...")
+                        print("[*] Patient in triage zone. Listening for speech or wake word...")
                         ambient_speech = self.audio.listen(language="th")
                         triggered, detected_lang = self.audio.detect_wake_word(ambient_speech)
 
-                        if triggered:
-                            print(f"[+] Wake-word verified ({detected_lang}). Launching clinical intake...")
+                        # Wake up if wake word verified OR if patient speaks any phrase directly to the kiosk
+                        if triggered or len(ambient_speech) > 0:
+                            print(f"[+] Patient engagement confirmed (speech: '{ambient_speech}'). Launching intake...")
                             self._reset_case_container()
-                            self.active_language = detected_lang
+                            self.active_language = detected_lang if triggered else "th"
                             self.case_container["language"] = self.active_language
                             self.current_state = KioskState.GREETING_LANG_SELECT
 
@@ -235,7 +235,7 @@ class SmartReceptionTriageKiosk:
                     deny_tokens = ["ไม่", "ปฏิเสธ", "no", "deny", "disagree", "not consent"]
                     if any(t in consent_reply.lower() for t in deny_tokens):
                         print("[-] Patient refused PDPA consent. Transitioning to MANUAL_ROUTING...")
-                        self.case_container["exit_reason"] = ExitReason.PDPA_DENIED
+                        self.case_container["exit_reason"] = ExitReason.PDPA_DENIED.value
                         self.current_state = KioskState.MANUAL_ROUTING
                     else:
                         self.case_container["pdpa_consented"] = True
@@ -254,16 +254,13 @@ class SmartReceptionTriageKiosk:
                 # 4. State: SYMPTOM_INTERVIEW (Interactive OPQRST Micro-Dialogue)
                 # -------------------------------------------------------------
                 elif self.current_state == KioskState.SYMPTOM_INTERVIEW:
-                    # Initial clinical inquiry prompt
                     self.audio.play_template("inquiry", lang=self.active_language, block=True)
 
                     interview_active = True
-                    dialogue_round = 0
                     consecutive_pauses = 0
 
                     while interview_active and self.running:
-                        dialogue_round += 1
-                        # 1. Capture utterance chunk with 2.5s silence threshold
+                        # 1. Capture speech chunk with snappy 1.5s silence threshold
                         chunk = self.audio.listen(language=self.active_language)
                         self._update_cumulative_visuals()
 
@@ -271,43 +268,39 @@ class SmartReceptionTriageKiosk:
                         if len(chunk) == 0:
                             consecutive_pauses += 1
                             if consecutive_pauses == 1:
-                                # First pause -> Play gentle active listening nudge
                                 self.audio.play_template("still_listening", lang=self.active_language, block=True)
                                 continue
                             elif consecutive_pauses == 2:
-                                # Second pause -> Prompt for additional details
                                 self.audio.play_template("anything_else", lang=self.active_language, block=True)
                                 continue
                             else:
-                                # Third extended silence -> Conclude interview
                                 print("[*] Extended silence verified. Finalizing symptom collection.")
-                                self.case_container["exit_reason"] = ExitReason.NORMAL_COMPLETE
+                                self.case_container["exit_reason"] = ExitReason.NORMAL_COMPLETE.value
                                 interview_active = False
                                 break
 
-                        # Reset pause counter upon speech detection
                         consecutive_pauses = 0
                         self.case_container["conversation"].append({"role": "patient", "text": chunk})
 
-                        # Case B: Acute Emergency Preemption Check (Levine's sign / collapse)
+                        # Case B: Acute Emergency Preemption (Levine's sign / collapse)
                         is_preempted, preempt_esi = self.reasoning.check_acute_preemption(
                             chunk,
                             self.case_container["cumulative_visual_signs"]
                         )
                         if is_preempted:
                             print(f"[!] ACUTE EMERGENCY PREEMPTION TRIGGERED: ESI Level {preempt_esi}!")
-                            self.case_container["exit_reason"] = ExitReason.EMERGENCY_INTERRUPT
+                            self.case_container["exit_reason"] = ExitReason.EMERGENCY_INTERRUPT.value
                             interview_active = False
                             break
 
                         # Case C: Explicit Stopping Intent Check ("แค่นี้ครับ" / "หมดแล้ว")
                         if self.reasoning.is_stopping_phrase(chunk, lang=self.active_language):
                             print("[*] Patient explicitly requested completion.")
-                            self.case_container["exit_reason"] = ExitReason.NORMAL_COMPLETE
+                            self.case_container["exit_reason"] = ExitReason.NORMAL_COMPLETE.value
                             interview_active = False
                             break
 
-                        # Case D: Clinical Turn Evaluation & Dynamic OPQRST Probing
+                        # Case D: Clinical Turn Evaluation with Echo-and-Pivot ("ทวนคำพูด + ตีกลับ")
                         turn_eval = self.reasoning.evaluate_turn_and_probe(
                             utterance=chunk,
                             history=self.case_container["conversation"],
@@ -319,16 +312,17 @@ class SmartReceptionTriageKiosk:
                         # Sub-case D1: 3-Strike Cognitive Failure (AMS Triggered)
                         if turn_eval["ams_triggered"]:
                             print("[!] 3-Strike Rule Tripped: Altered Mental Status (AMS) Diagnosed.")
-                            self.case_container["exit_reason"] = ExitReason.AMS_3_STRIKES
+                            self.case_container["exit_reason"] = ExitReason.AMS_3_STRIKES.value
                             interview_active = False
                             break
 
-                        # Sub-case D2: Off-topic Conversational Pivot
+                        # Sub-case D2: Off-topic Conversational Pivot (Echo-and-Pivot)
                         elif turn_eval["action"] == "STEER_PIVOT":
                             self.audio.speak_dynamic(turn_eval["speech_output"], lang=self.active_language, block=True)
+                            self.case_container["conversation"].append({"role": "kiosk_pivot", "text": turn_eval["speech_output"]})
                             continue
 
-                        # Sub-case D3: Dynamic OPQRST Question (<=25 tokens, Zero-PII)
+                        # Sub-case D3: Dynamic OPQRST Question (<=45 tokens, Zero-PII, Female Persona)
                         elif turn_eval["action"] == "PROBE_QUESTION":
                             self.audio.speak_dynamic(turn_eval["speech_output"], lang=self.active_language, block=True)
                             self.case_container["conversation"].append({"role": "kiosk_probe", "text": turn_eval["speech_output"]})
@@ -336,14 +330,13 @@ class SmartReceptionTriageKiosk:
 
                         # Sub-case D4: Clinical Details Sufficient
                         elif turn_eval["action"] == "DETAILS_SUFFICIENT":
-                            # Prompt if there is anything else to add
                             self.audio.play_template("anything_else", lang=self.active_language, block=True)
                             final_chunk = self.audio.listen(language=self.active_language)
 
                             if len(final_chunk) > 0 and not self.reasoning.is_stopping_phrase(final_chunk, lang=self.active_language):
                                 self.case_container["conversation"].append({"role": "patient", "text": final_chunk})
 
-                            self.case_container["exit_reason"] = ExitReason.NORMAL_COMPLETE
+                            self.case_container["exit_reason"] = ExitReason.NORMAL_COMPLETE.value
                             interview_active = False
                             break
 
@@ -353,7 +346,11 @@ class SmartReceptionTriageKiosk:
                 # 5. State: FINALIZING_CASE (Holistic SOAP & ESI Synthesis)
                 # -------------------------------------------------------------
                 elif self.current_state == KioskState.FINALIZING_CASE:
-                    print(f"[*] Packaging case [{self.case_container['case_id']}] (Exit: {self.case_container['exit_reason'].value})...")
+                    # Safe string extraction for exit reason
+                    raw_exit = self.case_container.get("exit_reason", ExitReason.NORMAL_COMPLETE.value)
+                    exit_str = raw_exit.value if hasattr(raw_exit, "value") else str(raw_exit)
+
+                    print(f"[*] Packaging case [{self.case_container['case_id']}] (Exit: {exit_str})...")
                     self._update_cumulative_visuals()
 
                     # Final Clinical Synthesis
@@ -361,7 +358,7 @@ class SmartReceptionTriageKiosk:
                         conversation_history=self.case_container["conversation"],
                         visual_signs=self.case_container["cumulative_visual_signs"],
                         skin_status=self.case_container["facial_skin_status"],
-                        exit_reason=self.case_container["exit_reason"],
+                        exit_reason=raw_exit,
                         language=self.active_language
                     )
                     self.case_container["triage_verdict"] = verdict
@@ -372,12 +369,13 @@ class SmartReceptionTriageKiosk:
                 # 6. State: DISPATCH_AND_RESET (Conveyor Belt Transport)
                 # -------------------------------------------------------------
                 elif self.current_state == KioskState.DISPATCH_AND_RESET:
-                    exit_r = self.case_container["exit_reason"]
+                    raw_exit = self.case_container.get("exit_reason", ExitReason.NORMAL_COMPLETE.value)
+                    exit_str = raw_exit.value if hasattr(raw_exit, "value") else str(raw_exit)
 
                     # 1. Play appropriate closing audio template
-                    if exit_r == ExitReason.EMERGENCY_INTERRUPT:
+                    if exit_str == ExitReason.EMERGENCY_INTERRUPT.value:
                         self.audio.play_template("emergency_alert", lang=self.active_language, block=True)
-                    elif exit_r == ExitReason.AMS_3_STRIKES:
+                    elif exit_str == ExitReason.AMS_3_STRIKES.value:
                         self.audio.play_template("ams_alert", lang=self.active_language, block=True)
                     else:
                         self.audio.play_template("wrapup", lang=self.active_language, block=True)

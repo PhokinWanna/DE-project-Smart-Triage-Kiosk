@@ -51,15 +51,21 @@ class SystemConfig:
     SKIN_CONFIDENCE_THRESHOLD = 0.65         # Minimum probability to classify as RED_FLUSHING
 
     # --- Audio Subsystem: Wake-Word & Fast-Whisper ---
-    WAKE_WORDS_TH = ["สวัสดี", "หวัดดี", "เริ่ม", "ช่วยด้วย", "ตรวจ"]
-    WAKE_WORDS_EN = ["hello", "hi", "start", "help", "triage"]
-    
-    FASTER_WHISPER_MODEL = "base"            # Local Fast-Whisper model
+    WAKE_WORDS_TH = ["สวัสดี", "หวัดดี", "เริ่ม", "ช่วยด้วย", "ตรวจ", "ฮัลโหล"]
+    WAKE_WORDS_EN = ["hello", "hi", "start", "help", "triage", "greeting", "hey"]
+
+# Set physical mic to Index 1 (Your USB Mic)
+    MICROPHONE_DEVICE_INDEX = 1
+
+# Force CPU for Fast-Whisper (Zero CUDA DLL errors & frees VRAM for Llama) 
+    FASTER_WHISPER_DEVICE = "cpu"
+    FASTER_WHISPER_MODEL = "small"            # Local Fast-Whisper model
     FASTER_WHISPER_COMPUTE = "int8"          # 8-bit quantization: lightweight (~600MB memory)
+
     SPEECH_PAUSE_THRESHOLD = 2.5             # Wait 2.5s of silence before finalizing utterance
     SPEECH_TIMEOUT = 10.0                    # Max wait time for patient speech initiation
     SPEECH_PHRASE_LIMIT = 20.0               # Max duration of a continuous speaking turn
-    MIC_ENERGY_THRESHOLD = 300               # Audio sensitivity floor
+    MIC_ENERGY_THRESHOLD = 200               # Audio sensitivity floor
 
     # --- Conversational Clinical Rules & OPQRST ---
     MAX_OFFTOPIC_STRIKES = 3                 # 3 strikes = Altered Mental Status (ESI Level 2)
@@ -128,7 +134,7 @@ class SystemConfig:
     # --- Reasoning Engine (Local Ollama Llama 3.2) ---
     OLLAMA_HOST = os.getenv("OLLAMA_HOST", "http://localhost:11434")
     OLLAMA_MODEL = "llama3.2:latest"
-    OLLAMA_TIMEOUT = 5.0                     # Hard timeout before deterministic fallback triggers
+    OLLAMA_TIMEOUT = 15.0                     # Hard timeout before deterministic fallback triggers
 
     # --- Background "Conveyor Belt" Outbox Spooler ---
     OUTBOX_SPOOL_DIR = os.path.join(BASE_DIR, "spool_outbox")
