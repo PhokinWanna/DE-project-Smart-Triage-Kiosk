@@ -102,15 +102,15 @@ class SystemConfig:
     # Text Sources for Audio Templates (Polite Clinical Tone)
     SCRIPT_TEXTS = {
         "th": {
-            "greeting": "สวัสดีค่ะ ดิฉันคือระบบผู้ช่วยพยาบาลคัดกรองอัตโนมัติ กรุณาแจ้งอาการ หรือเลือกใช้งานเป็น ภาษาไทย หรือ ภาษาอังกฤษ ได้เลยค่ะ",
-            "pdpa_notice": "เนื่องด้วยตาม พ.ร.บ. คุ้มครองข้อมูลส่วนบุคคล หรือ PDPA ระบบขออนุญาตบันทึกเสียงและภาพของการสนทนานี้เพื่อการคัดกรองทางการแพทย์ ท่านประสงค์ยินยอมหรือไม่คะ?",
+            "greeting": "สวัสดีค่ะ ดิฉันคือระบบผู้ช่วยพยาบาลคัดกรองอัตโนมัติ กรุณาแจ้งอาการหรือเลือกใช้งานเป็นภาษาไทยหรือภาษาอังกฤษได้เลยค่ะ",
+            "pdpa_notice": "เนื่องด้วยตามพ.ร.บ.คุ้มครองข้อมูลส่วนบุคคลหรือPDPAระบบขออนุญาตบันทึกเสียงและภาพของการสนทนานี้ เพื่อการคัดกรองทางการแพทย์ ท่านประสงค์ยินยอมหรือไม่คะ?",
             "pdpa_denied": "รับทราบค่ะ ระบบจะไม่บันทึกข้อมูลของท่านใดๆ กรุณาติดต่อเคาน์เตอร์พยาบาลด้านหน้าได้โดยตรง ขอบคุณค่ะ",
-            "inquiry": "วันนี้มีอาการไม่สบายตรงไหน หรือมีอะไรให้ดิฉันช่วยดูแลคะ?",
+            "inquiry": "วันนี้มีอาการไม่สบายตรงไหนหรือมีอะไรให้ดิฉันช่วยดูแลคะ?",
             "still_listening": "ดิฉันยังฟังอยู่นะคะ เล่าต่อได้เลยค่ะ",
-            "anything_else": "ระบบบันทึกข้อมูลเรียบร้อยค่ะ มีอาการผิดปกติอื่นเพิ่มเติมอีกไหมคะ?",
+            "anything_else": "ระบบบันทึกข้อมูลเรียบร้อยค่ะ มีอะไรเพิ่มเติมอีกไหมคะ?",
             "wrapup": "ระบบได้รวบรวมข้อมูลและอาการทั้งหมดและส่งไปยังพยาบาลเรียบร้อยแล้ว กรุณานั่งรอเรียกชื่อที่จุดพักคอยนะคะ",
-            "emergency_alert": "ระบบตรวจพบอาการเข้าข่ายฉุกเฉินวิกฤต กำลังส่งสัญญาณเรียกพยาบาลเข้ามาดูแลทันที กรุณานั่งนิ่งๆ นะคะ",
-            "ams_alert": "ระบบได้ส่งสัญญาณแจ้งเตือนพยาบาลให้เข้ามาดูแลท่านที่หน้าตู้คัดกรองแล้ว กรุณารอสักครู่นะคะ"
+            "emergency_alert": "ระบบตรวจพบอาการฉุกเฉิน กำลังส่งสัญญาณเรียกพยาบาลเข้ามาดูแลทันที กรุณานั่งนิ่งๆก่อนนะคะ",
+            "ams_alert": "ระบบได้ส่งสัญญาณแจ้งเตือนพยาบาลให้เข้ามาดูแลท่านที่หน้าตู้คัดกรองแล้ว กรุณารอสักครู่ค่ะ"
         },
         "en": {
             "greeting": "Hello, I am your automated triage nurse assistant system. Please select English or Thai to proceed.",
@@ -118,9 +118,9 @@ class SystemConfig:
             "pdpa_denied": "Understood. No data will be stored. Please proceed directly to the nurse reception desk. Thank you.",
             "inquiry": "What symptoms or discomfort bring you to the emergency department today? What can I help you with?",
             "still_listening": "I am still listening. Please feel free to continue.",
-            "anything_else": "I have noted that down. Do you have any additional symptoms or details to add?",
+            "anything_else": "I have noted that down. Do you have any else or details to add?",
             "wrapup": "Your clinical case has been compiled and dispatched to the triage nurse. Please take a seat in the waiting area.",
-            "emergency_alert": "Critical emergency signals detected. Alerting resuscitation nurses to your station immediately. Please remain seated.",
+            "emergency_alert": "Critical emergency detected. Alerting resuscitation nurses to your station immediately. Please remain seated.",
             "ams_alert": "Triage staff have been dispatched to assist you at the kiosk. Please wait a moment."
         }
     }
