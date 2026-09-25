@@ -1,6 +1,17 @@
-{
+[{
   "case_id": "CASE-1790269953",
   "start_time": "2026-09-25 00:12:33",
   "language": "th",
   "pdpa_consented": true,
-  "exit_reason": null} 
+  "exit_reason": null},
+{
+  "esi_level": 2,
+  "clinical_summary": "Patient reports severe chest tightness with observed chest-clutching posture.",
+  "action_needed": "Immediate transfer to resuscitation / acute care area for ECG.",
+  "soap_note": {
+    "subjective": "Patient complains of crushing chest pressure and dizziness.",
+    "objective": "Vision Module: Persistent chest hold detected (2.3s), normal skin perfusion.",
+    "assessment": "High-risk acute coronary syndrome presentation (ESI Level 2).",
+    "plan": "Alert triage nurse immediately, prepare wheelchair and ECG."
+  }
+}]
