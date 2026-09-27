@@ -5,13 +5,13 @@
   "pdpa_consented": true,
   "exit_reason": null},
 {
-  "esi_level": 2,
-  "clinical_summary": "Patient reports severe chest tightness with observed chest-clutching posture.",
-  "action_needed": "Immediate transfer to resuscitation / acute care area for ECG.",
+  "esi_level": 4,
+  "clinical_summary": "Patient reports a minor headache around 6:00 AM and minor skin pain/irritation rated at 5 out of 10.",
+  "action_needed": "Queue case for background transmission to the Nurse Station and return kiosk to standby.",
   "soap_note": {
-    "subjective": "Patient complains of crushing chest pressure and dizziness.",
-    "objective": "Vision Module: Persistent chest hold detected (2.3s), normal skin perfusion.",
-    "assessment": "High-risk acute coronary syndrome presentation (ESI Level 2).",
-    "plan": "Alert triage nurse immediately, prepare wheelchair and ECG."
+    "subjective": "Patient reports minor headache starting at 6:00 AM and a mild skin pain/irritation rated 5 out of 10.",
+    "objective": "Audio Cache: Successful speech-to-text processing in Thai language preference. Vision/Physical Module: No physical distress anomalies noted in logs.",
+    "assessment": "Mild symptoms consistent with ESI Level 4 (Less Urgent). Case CASE-1790426958 packaged with NORMAL_COMPLETE status.",
+    "plan": "Complete case wrap-up, retry transmission to Nurse Station spooler within 5.0 seconds once back online, and return kiosk to PREPARE_STANDBY."
   }
 }]

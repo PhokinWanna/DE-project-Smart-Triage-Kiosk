@@ -61,6 +61,7 @@ class SystemConfig:
     FASTER_WHISPER_DEVICE = "cpu"
     FASTER_WHISPER_MODEL = "small"            # Local Fast-Whisper model
     FASTER_WHISPER_COMPUTE = "int8"          # 8-bit quantization: lightweight (~600MB memory)
+    FASTER_WHISPER_CPU_THREADS = 4
 
     SPEECH_PAUSE_THRESHOLD = 2.5             # Wait 2.5s of silence before finalizing utterance
     SPEECH_TIMEOUT = 10.0                    # Max wait time for patient speech initiation
@@ -130,6 +131,14 @@ class SystemConfig:
             "ams_alert": "Triage staff have been dispatched to assist you at the kiosk. Please wait a moment."
         }
     }
+
+    TIME_AND_NUMERIC_KEYWORDS = [
+        "โมง", "เช้า", "สาย", "บ่าย", "เย็น", "ค่ำ", "ดึก", "วัน", "ชั่วโมง", "นาที", 
+        "เมื่อวาน", "ก่อน", "หลัง", "ตี", "เมื่อกี้", "เมื่อคืน", "ตั้งแต่",
+        "1", "2", "3", "4", "5", "6", "7", "8", "9", "10",
+        "morning", "afternoon", "evening", "night", "yesterday", "hours", "days", "mins", "since",
+        "scale", "mild", "severe", "moderate"
+    ]
 
     # --- Reasoning Engine (Local Ollama Llama 3.2) ---
     OLLAMA_HOST = os.getenv("OLLAMA_HOST", "http://localhost:11434")

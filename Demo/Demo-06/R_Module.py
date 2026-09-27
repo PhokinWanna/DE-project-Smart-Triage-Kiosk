@@ -83,7 +83,8 @@ class ReasoningEngine:
 
         # Context-Aware Check: Did patient mention symptoms OR answer with time/quantity?
         has_medical_term = any(kw in text for kw in medical_keywords)
-        has_time_or_number = any(kw in text for kw in SystemConfig.TIME_AND_NUMERIC_KEYWORDS)
+        time_keywords = getattr(SystemConfig, "TIME_AND_NUMERIC_KEYWORDS", ["โมง", "เช้า", "yesterday", "hours", "days"])
+        has_time_or_number = any(kw in text for kw in time_keywords)
 
         is_relevant = has_medical_term or has_time_or_number or len(text.split()) >= 4
 

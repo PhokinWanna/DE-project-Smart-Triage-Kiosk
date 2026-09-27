@@ -51,7 +51,7 @@ class AudioEngine:
                 SystemConfig.FASTER_WHISPER_MODEL,
                 device=SystemConfig.FASTER_WHISPER_DEVICE,
                 compute_type=SystemConfig.FASTER_WHISPER_COMPUTE,
-                cpu_threads=SystemConfig.FASTER_WHISPER_CPU_THREADS
+                cpu_threads=getattr(SystemConfig, "FASTER_WHISPER_CPU_THREADS", 4)
             )
             print("[+] Fast-Whisper armed with multi-threaded CPU acceleration.")
         except Exception as e:
