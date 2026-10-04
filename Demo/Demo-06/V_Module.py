@@ -62,24 +62,24 @@ class VisionEngine:
             except Exception:
                 pass
 
-            try:
-                from tflite_runtime.interpreter import Interpreter
-                self.tflite_interpreter = Interpreter(model_path=model_path)
-                self.tflite_interpreter.allocate_tensors()
-                print(f"[+] Armed TFLite Skin CNN via tflite_runtime: {model_path}")
-                return
-            except Exception:
-                pass
+            # try:
+            #     from tflite_runtime.interpreter import Interpreter
+            #     self.tflite_interpreter = Interpreter(model_path=model_path)
+            #     self.tflite_interpreter.allocate_tensors()
+            #     print(f"[+] Armed TFLite Skin CNN via tflite_runtime: {model_path}")
+            #     return
+            # except Exception:
+            #     pass
 
-            # Attempt 2: TensorFlow Lite runtime
-            try:
-                import tensorflow as tf
-                self.tflite_interpreter = tf.lite.Interpreter(model_path=model_path)
-                self.tflite_interpreter.allocate_tensors()
-                print(f"[+] Armed TFLite Skin CNN via TensorFlow: {model_path}")
-                return
-            except Exception:
-                pass
+            # # Attempt 2: TensorFlow Lite runtime
+            # try:
+            #     import tensorflow as tf
+            #     self.tflite_interpreter = tf.lite.Interpreter(model_path=model_path)
+            #     self.tflite_interpreter.allocate_tensors()
+            #     print(f"[+] Armed TFLite Skin CNN via TensorFlow: {model_path}")
+            #     return
+            # except Exception:
+            #     pass
 
         print(f"[i] Running Skin Perception in High-Reliability CNN Scaffold Mode.")
 

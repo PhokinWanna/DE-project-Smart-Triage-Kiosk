@@ -4,6 +4,7 @@ Unified Smart Triage Kiosk System - Final Production Architecture
 """
 
 import os
+os.environ["HF_HUB_DISABLE_SYMLINKS_WARNING"] = "1"
 from enum import Enum
 
 class KioskState(Enum):
@@ -37,6 +38,7 @@ class SystemConfig:
     PRESENCE_DETECTION_CONFIRM_FRAMES = 15   # Alias for backward compatibility
     GESTURE_HOLD_SECONDS = 1.5               # Scratch Filter: Hold clutching pose > 1.5s
     SKIN_DUTY_CYCLE_SECONDS = 7.0            # Run CNN skin inference once every 7.0 seconds
+    GESTURE_SUSTAINED_SECONDS = 3.0          # Must sustain gesture for >=3.0s to count in final case
     
     # Anatomical distance ratios relative to torso length (|Mid-Shoulder - Mid-Hip|)
     CHEST_PAIN_TORSO_RATIO = 0.35            # Wrist to Sternum relative to Torso length
@@ -47,15 +49,15 @@ class SystemConfig:
     THINKING_FOREARM_MIN_ANGLE = 65.0        # Thinking Pose vertical forearm angle
 
     # --- TensorFlow Lite / CNN Skin Model ---
-    TFLITE_SKIN_MODEL_PATH = "Demo/Demo-06/Model/skin_classifier.tflite"
+    TFLITE_SKIN_MODEL_PATH = "Demo/Demo-06.2-Mac/Model/skin_classifier.tflite"
     SKIN_CONFIDENCE_THRESHOLD = 0.65         # Minimum probability to classify as RED_FLUSHING
 
     # --- Audio Subsystem: Wake-Word & Fast-Whisper ---
     WAKE_WORDS_TH = ["สวัสดี", "หวัดดี", "เริ่ม", "ช่วยด้วย", "ตรวจ", "ฮัลโหล"]
     WAKE_WORDS_EN = ["hello", "hi", "start", "help", "triage", "greeting", "hey"]
 
-# Set physical mic to Index 1 (Your USB Mic)
-    MICROPHONE_DEVICE_INDEX = 1
+# Set physical mic to Index 1 (Your USB Mic), but i use 0 for defult mac mic
+    MICROPHONE_DEVICE_INDEX = 0
 
 # Force CPU for Fast-Whisper (Zero CUDA DLL errors & frees VRAM for Llama) 
     FASTER_WHISPER_DEVICE = "cpu"
@@ -106,7 +108,7 @@ class SystemConfig:
         }
     }
 
-    # Text Sources for Audio Templates (Polite Clinical Tone)
+    # Text Sources for Audio Templates and Picture Path (Polite Clinical Tone)
     SCRIPT_TEXTS = {
         "th": {
             "greeting": "สวัสดีค่ะ ดิฉันคือระบบผู้ช่วยพยาบาลคัดกรองอัตโนมัติ กรุณาแจ้งอาการหรือเลือกใช้งานเป็นภาษาไทยหรือภาษาอังกฤษได้เลยค่ะ",
@@ -139,6 +141,8 @@ class SystemConfig:
         "morning", "afternoon", "evening", "night", "yesterday", "hours", "days", "mins", "since",
         "scale", "mild", "severe", "moderate"
     ]
+
+    EVIDENCE_DIR = os.path.join(BASE_DIR, "evidence")
 
     # --- Reasoning Engine (Local Ollama Llama 3.2) ---
     OLLAMA_HOST = os.getenv("OLLAMA_HOST", "http://localhost:11434")
