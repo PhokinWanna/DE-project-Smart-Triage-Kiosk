@@ -1,6 +1,6 @@
 """
 A_Module.py - Hybrid Audio Subsystem (macOS CoreAudio + Windows Fallback)
-Fast-Whisper On-Device STT, Native afplay / Pygame Caching, and Zero-PII Dynamic Prompts.
+Fast-Whisper On-Device STT, Native afplay / Pygame Caching, and Dynamic Prompts.
 """
 
 import os
@@ -27,17 +27,17 @@ class AudioEngine:
         self._is_speaking = False
         self.audio_lock = threading.Lock()
 
-        # 1. Initialize Microphone Listener with 1.5s Silence Threshold
+        # 1. Initialize Microphone Listener with Snappy 1.5s Pause Threshold
         self.recognizer = sr.Recognizer()
         self.recognizer.pause_threshold = getattr(SystemConfig, "SPEECH_PAUSE_THRESHOLD", 1.5)
         self.recognizer.energy_threshold = getattr(SystemConfig, "MIC_ENERGY_THRESHOLD", 100)
         self.recognizer.dynamic_energy_threshold = True
 
-        # Pre-calibrate microphone once at boot
-        mic_idx = getattr(SystemConfig, "MICROPHONE_DEVICE_INDEX", None)
+        # Pre-calibrate microphone once at boot (Auto-routes CoreAudio default on Mac)
+        mic_idx = None if IS_MAC else getattr(SystemConfig, "MICROPHONE_DEVICE_INDEX", None)
         try:
             with sr.Microphone(device_index=mic_idx) as source:
-                print("[*] Calibrating microphone for ambient room noise once...")
+                print(f"[*] Calibrating microphone (Device: {mic_idx or 'System Default'})...")
                 self.recognizer.adjust_for_ambient_noise(source, duration=0.6)
                 print(f"[+] Ambient energy baseline established at: {self.recognizer.energy_threshold:.1f}")
         except Exception as e:
@@ -49,10 +49,10 @@ class AudioEngine:
         self.warmup()
 
     def _init_faster_whisper(self):
-        """Loads faster-whisper model on CPU using 4 parallel worker threads."""
+        """Loads faster-whisper model on CPU using multi-threaded acceleration."""
         try:
             from faster_whisper import WhisperModel
-            model_name = getattr(SystemConfig, "FASTER_WHISPER_MODEL", "small")
+            model_name = getattr(SystemConfig, "FASTER_WHISPER_MODEL", "medium")
             device_type = getattr(SystemConfig, "FASTER_WHISPER_DEVICE", "cpu")
             compute_type = getattr(SystemConfig, "FASTER_WHISPER_COMPUTE", "int8")
             threads = getattr(SystemConfig, "FASTER_WHISPER_CPU_THREADS", 4)
@@ -64,7 +64,7 @@ class AudioEngine:
                 compute_type=compute_type,
                 cpu_threads=threads
             )
-            print("[+] Fast-Whisper armed with multi-threaded CPU acceleration.")
+            print(f"[+] Fast-Whisper [{model_name}] armed with multi-threaded CPU acceleration.")
         except Exception as e:
             print(f"[!] Warning: faster-whisper initialization issue ({e}). Fallback armed.")
             self.whisper_model = None
@@ -94,7 +94,7 @@ class AudioEngine:
                 self._is_speaking = True
                 try:
                     if IS_MAC:
-                        # 100% Native macOS CoreAudio execution (Zero SDL2 collisions)
+                        # Native macOS CoreAudio execution (Zero SDL2 collisions)
                         subprocess.run(["/usr/bin/afplay", filepath], check=True)
                     else:
                         # Windows fallback
@@ -156,12 +156,12 @@ class AudioEngine:
             thread.join()
 
     # -------------------------------------------------------------------------
-    # FAST SPEECH INGESTION: 1.5s Pause Threshold + Local Fast-Whisper
+    # FAST SPEECH INGESTION: Dynamic Auto-Detection & Clean Decoding
     # -------------------------------------------------------------------------
     def listen(self, language: str = "th") -> str:
         """Captures microphone audio and decodes via multi-threaded Fast-Whisper."""
         transcript = ""
-        mic_idx = getattr(SystemConfig, "MICROPHONE_DEVICE_INDEX", None)
+        mic_idx = None if IS_MAC else getattr(SystemConfig, "MICROPHONE_DEVICE_INDEX", None)
 
         with sr.Microphone(device_index=mic_idx) as source:
             print(f"[*] Mic Listening [pause_threshold={self.recognizer.pause_threshold}s]...")
@@ -181,15 +181,17 @@ class AudioEngine:
                     if max_amp > 0.01:
                         audio_float32 = (audio_float32 / (max_amp + 1e-6)) * 0.9
 
-                    # Medical Vocabulary Priming Hint
-                    medical_prompt = "ผู้ป่วยมาคัดกรองที่โรงพยาบาล แจ้งอาการไม่สบาย เจ็บหน้าอก แน่นหน้าอก ปวดท้อง มีไข้ ปวดหัว เวียนหัว คลื่นไส้ อาเจียน หนาวสั่น หายใจลำบาก หกโมงเช้า เมื่อวาน สองวัน" if language == "th" else "Hospital emergency triage intake, chief complaint, chest pain, abdominal pain, fever, headache, dizziness, yesterday, hours"
+                    # Dynamic Language Routing: Auto-detect in Standby, or target active language
+                    if language in ["auto", None, ""]:
+                        lang_code = None  # Dynamic detection for "Hello" vs "สวัสดี"
+                    else:
+                        lang_code = "th" if language.startswith("th") else "en"
 
-                    lang_code = "th" if language.startswith("th") else "en"
+                    # Natural Decoding: No fragile prompt-stuffing hacks
                     segments, _ = self.whisper_model.transcribe(
                         audio_float32,
                         beam_size=2,
                         language=lang_code,
-                        initial_prompt=medical_prompt,
                         vad_filter=True
                     )
                     transcript = " ".join([seg.text for seg in segments]).strip()

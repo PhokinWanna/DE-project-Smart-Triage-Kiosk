@@ -1,0 +1,42 @@
+{
+  "case_id": "CASE-1791124945",
+  "start_time": "2026-10-04 21:42:25",
+  "language": "en",
+  "pdpa_consented": true,
+  "exit_reason": "EMERGENCY_INTERRUPT",
+  "conversation": [
+    {
+      "role": "pdpa_response",
+      "text": "Yes, I was"
+    },
+    {
+      "role": "patient",
+      "text": "okay what can I say I have a severe clutching chase pain and I'm you know I'm  I feel so tight and it is raiding down into my left arm and I can hardly bleed  too"
+    },
+    {
+      "role": "kiosk_agent",
+      "text": "Can you tell me when this started?"
+    },
+    {
+      "role": "patient",
+      "text": "It's about to begin when it was around 5 or 4 o'clock."
+    }
+  ],
+  "cumulative_visual_signs": {
+    "chest_clutching": true,
+    "abdominal_clutching": false,
+    "head_clutching": false
+  },
+  "facial_skin_status": "NORMAL",
+  "visual_evidence_path": "/Users/petch_phokin/Desktop/All_Project/Final_Project/Demo/Demo-06.2-Mac/evidence/CASE-1791124945.jpg",
+  "triage_verdict": {
+    "esi_level": 2,
+    "urgency": "Emergent / High Risk",
+    "scenario_type": "SCENARIO_C_CLINICAL_CONFLICT",
+    "subjective": "okay what can I say I have a severe clutching chase pain and I'm you know I'm  I feel so tight and it is raiding down into my left arm and I can hardly bleed  too It's about to begin when it was around 5 or 4 o'clock.",
+    "objective": "Visual signs: {'chest_clutching': True, 'abdominal_clutching': False, 'head_clutching': False}, Facial Erythema: NORMAL",
+    "assessment": "Clinical assessment generated via deterministic fallback.",
+    "plan": "Route according to ESI priority triage protocol.",
+    "audit_mode": "DETERMINISTIC_FALLBACK_ACTIVE"
+  }
+}

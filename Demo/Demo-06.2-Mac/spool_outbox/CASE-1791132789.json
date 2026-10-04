@@ -1,0 +1,46 @@
+{
+  "case_id": "CASE-1791132789",
+  "start_time": "2026-10-04 23:53:09",
+  "language": "th",
+  "pdpa_consented": true,
+  "exit_reason": "NORMAL_COMPLETE",
+  "conversation": [
+    {
+      "role": "pdpa_response",
+      "text": "เอ่อ ยิ้มยอมครับ"
+    },
+    {
+      "role": "patient",
+      "text": "คือวันนี้นะครับผมรู้สึกปวดหัวมากๆ ปวดมาตั้งแต่ชาวจนจิงตอนเที่ยงเลยครับ แล้วก็รู้สึกคลื่นไซด้วยแต่ว่ายังไม่ได้อวกครับ"
+    },
+    {
+      "role": "kiosk_agent",
+      "text": "คุณบอกว่าปวดหัวมาเป็นเวลานานแล้ว ควรใช้เวลาประเมินอาการกี่ชั่วโมงหรือระดับความเจ็บปวดของคุณบ้างนะคะ"
+    },
+    {
+      "role": "patient",
+      "text": "เอ่อ..ผมปวดมาประมาณ.."
+    },
+    {
+      "role": "patient",
+      "text": "มีครับคือผมจะบอกว่าคือผมปวดแบบ ปวดบ้านตั้งแต่ตอนเช้าตัวแต่ 10 โมงเช้าแล้วตอนนี้ก็ยังไม่หายเลย กลัวว่าจะเป็นมายเกรนนะครับ แทมยังมีอาการขึ้นใสด้วย"
+    }
+  ],
+  "cumulative_visual_signs": {
+    "chest_clutching": false,
+    "abdominal_clutching": false,
+    "head_clutching": false
+  },
+  "facial_skin_status": "NORMAL",
+  "visual_evidence_path": "/Users/petch_phokin/Desktop/All_Project/Final_Project/Demo/Demo-06.2-Mac/evidence/CASE-1791132789.jpg",
+  "triage_verdict": {
+    "esi_level": 4,
+    "urgency": "Less Urgent",
+    "scenario_type": "SCENARIO_B_SUBJECTIVE_ONLY",
+    "subjective": "คือวันนี้นะครับผมรู้สึกปวดหัวมากๆ ปวดมาตั้งแต่ชาวจนจิงตอนเที่ยงเลยครับ แล้วก็รู้สึกคลื่นไซด้วยแต่ว่ายังไม่ได้อวกครับ เอ่อ..ผมปวดมาประมาณ.. มีครับคือผมจะบอกว่าคือผมปวดแบบ ปวดบ้านตั้งแต่ตอนเช้าตัวแต่ 10 โมงเช้าแล้วตอนนี้ก็ยังไม่หายเลย กลัวว่าจะเป็นมายเกรนนะครับ แทมยังมีอาการขึ้นใสด้วย",
+    "objective": "Visual signs: {'chest_clutching': False, 'abdominal_clutching': False, 'head_clutching': False}, Facial Erythema: NORMAL",
+    "assessment": "Clinical assessment generated via deterministic fallback.",
+    "plan": "Route according to ESI priority triage protocol.",
+    "audit_mode": "DETERMINISTIC_FALLBACK_ACTIVE"
+  }
+}

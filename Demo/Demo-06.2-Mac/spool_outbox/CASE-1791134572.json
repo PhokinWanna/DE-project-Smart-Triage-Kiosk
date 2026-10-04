@@ -1,0 +1,78 @@
+{
+  "case_id": "CASE-1791134572",
+  "start_time": "2026-10-05 00:22:52",
+  "language": "en",
+  "pdpa_consented": true,
+  "exit_reason": "NORMAL_COMPLETE",
+  "conversation": [
+    {
+      "role": "pdpa_response",
+      "text": "Ah, yes, I was"
+    },
+    {
+      "role": "patient",
+      "text": "Uh..."
+    },
+    {
+      "role": "kiosk_agent",
+      "text": "Can you please tell me what's wrong?"
+    },
+    {
+      "role": "patient",
+      "text": "I think I have a little headache and it's pain so much."
+    },
+    {
+      "role": "kiosk_agent",
+      "text": "Can you tell me when the pain started?"
+    },
+    {
+      "role": "patient",
+      "text": "It started on 5 a.m. in the morning"
+    },
+    {
+      "role": "kiosk_agent",
+      "text": "Can you tell me more about your headache?"
+    },
+    {
+      "role": "patient",
+      "text": "And I think it's pain a little...  It's pain a little..."
+    },
+    {
+      "role": "kiosk_agent",
+      "text": "Can you tell me more about where your headache is located?"
+    },
+    {
+      "role": "patient",
+      "text": "It's on my left side, I think, mostly, and it's pain between left and right, but not at the same time. It's also one side."
+    },
+    {
+      "role": "kiosk_agent",
+      "text": "Can you tell me more about when this pain started?"
+    },
+    {
+      "role": "patient",
+      "text": "It starts on 10AM"
+    },
+    {
+      "role": "patient",
+      "text": "Uh yeah, I just want to see a doctor now, cause you please contact them."
+    }
+  ],
+  "cumulative_visual_signs": {
+    "chest_clutching": false,
+    "abdominal_clutching": false,
+    "head_clutching": false
+  },
+  "facial_skin_status": "NORMAL",
+  "visual_evidence_path": "/Users/petch_phokin/Desktop/All_Project/Final_Project/Demo/Demo-06.2-Mac/evidence/CASE-1791134572.jpg",
+  "triage_verdict": {
+    "esi_level": 4,
+    "urgency": "Less Urgent",
+    "scenario_type": "SCENARIO_B_SUBJECTIVE_ONLY",
+    "subjective": "Uh... I think I have a little headache and it's pain so much. It started on 5 a.m. in the morning And I think it's pain a little...  It's pain a little... It's on my left side, I think, mostly, and it's pain between left and right, but not at the same time. It's also one side. It starts on 10AM Uh yeah, I just want to see a doctor now, cause you please contact them.",
+    "objective": "Visual signs: {'chest_clutching': False, 'abdominal_clutching': False, 'head_clutching': False}, Facial Erythema: NORMAL",
+    "assessment": "Clinical assessment generated via deterministic fallback.",
+    "plan": "Route according to ESI priority triage protocol.",
+    "audit_mode": "DETERMINISTIC_FALLBACK_ACTIVE"
+  }
+}

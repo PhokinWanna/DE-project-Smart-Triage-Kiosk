@@ -1,0 +1,2451 @@
+# """
+# Main.py - Master Kiosk Orchestrator (macOS Cocoa Main-Thread Compliant)
+# Main-Thread GUI Rendering, Background FSM Triage, and Asynchronous Outbox.
+# """
+# import os
+# import cv2
+# import time
+# import json
+# import queue
+# import base64
+# import threading
+# import requests
+# from config import SystemConfig, KioskState, ExitReason
+# from V_Module import VisionEngine
+# from A_Module import AudioEngine
+# from R_Module import ReasoningEngine
+
+# class ConveyorBeltWorker(threading.Thread):
+#     """
+#     Background Outbox Spooler (The Conveyor Belt).
+#     Ensures network latency never blocks front-end kiosk operations.
+#     """
+#     def __init__(self, spool_dir: str, endpoint: str):
+#         super().__init__(daemon=True)
+#         self.spool_dir = spool_dir
+#         self.endpoint = endpoint
+#         self.queue = queue.Queue()
+#         self.running = True
+#         os.makedirs(self.spool_dir, exist_ok=True)
+
+#     def enqueue_case(self, case_container: dict):
+#         """Saves local persistent backup and queues payload for background dispatch."""
+#         case_id = case_container.get("case_id", f"CASE-{int(time.time())}")
+#         disk_path = os.path.join(self.spool_dir, f"{case_id}.json")
+
+#         try:
+#             with open(disk_path, "w", encoding="utf-8") as f:
+#                 json.dump(case_container, f, ensure_ascii=False, indent=2)
+#         except Exception as e:
+#             print(f"[!] Warning: Failed to spool case to local disk: {e}")
+
+#         self.queue.put((case_id, disk_path, case_container))
+#         print(f"[+] [Conveyor Belt]: Case {case_id} queued for background transmission.")
+
+#     def run(self):
+#         while self.running:
+#             try:
+#                 case_id, disk_path, payload = self.queue.get(timeout=1.0)
+#             except queue.Empty:
+#                 continue
+
+#             transmitted = False
+#             while not transmitted and self.running:
+#                 try:
+#                     res = requests.post(self.endpoint, json=payload, timeout=SystemConfig.HTTP_TIMEOUT)
+#                     if res.status_code in [200, 201]:
+#                         print(f"[✓] [Conveyor Belt]: Case {case_id} successfully delivered to Nurse Dashboard.")
+#                         transmitted = True
+#                         if os.path.exists(disk_path):
+#                             os.remove(disk_path)
+#                     else:
+#                         print(f"[!] [Conveyor Belt]: Dashboard returned status {res.status_code}. Retrying in {SystemConfig.CONVEYOR_RETRY_INTERVAL}s...")
+#                         time.sleep(SystemConfig.CONVEYOR_RETRY_INTERVAL)
+#                 except requests.exceptions.RequestException:
+#                     print(f"[-] [Conveyor Belt]: Nurse Station offline. Holding case in spool. Retrying in {SystemConfig.CONVEYOR_RETRY_INTERVAL}s...")
+#                     time.sleep(SystemConfig.CONVEYOR_RETRY_INTERVAL)
+
+#             self.queue.task_done()
+
+# class SmartReceptionTriageKiosk:
+#     def __init__(self):
+#         print(">> Initializing Stark Industries Smart Reception Triage Kiosk...")
+#         self.vision = VisionEngine()
+#         self.audio = AudioEngine()
+#         self.reasoning = ReasoningEngine()
+
+#         # VRAM Keep-Alive Heartbeat Timer
+#         self.last_heartbeat = time.time()
+
+#         # Arm the Conveyor Belt Outbox Worker
+#         self.conveyor_belt = ConveyorBeltWorker(
+#             spool_dir=SystemConfig.OUTBOX_SPOOL_DIR,
+#             endpoint=SystemConfig.NURSE_DASHBOARD_ENDPOINT
+#         )
+#         self.conveyor_belt.start()
+
+#         # FSM State & Session Properties
+#         self.current_state = KioskState.PREPARE_STANDBY
+#         self.active_language = "th"
+#         self.running = True
+#         self.current_strikes = 0
+
+#         # Thread-safe Perception Telemetry
+#         self.latest_telemetry = {}
+#         self.telemetry_lock = threading.Lock()
+
+#         # Active Case Container
+#         self.case_container = {}
+#         self._reset_case_container()
+
+#     def _reset_case_container(self):
+#         """Initializes a fresh, clinical container for the encounter."""
+#         self.current_strikes = 0
+#         self.case_container = {
+#             "case_id": f"CASE-{int(time.time())}",
+#             "start_time": time.strftime("%Y-%m-%d %H:%M:%S"),
+#             "language": self.active_language,
+#             "pdpa_consented": False,
+#             "exit_reason": None,
+#             "conversation": [],
+#             "cumulative_visual_signs": {
+#                 "chest_clutching": False,
+#                 "abdominal_clutching": False,
+#                 "head_clutching": False
+#             },
+#             "facial_skin_status": "NORMAL",
+#             "visual_evidence_b64": None,
+#             "triage_verdict": None
+#         }
+
+#     def _update_cumulative_visuals(self):
+#         """Aggregates kinetic and facial telemetry into the current case container."""
+#         with self.telemetry_lock:
+#             t = self.latest_telemetry
+#             for key in ["chest_clutching", "abdominal_clutching", "head_clutching"]:
+#                 if t.get(key, False):
+#                     self.case_container["cumulative_visual_signs"][key] = True
+
+#             self.case_container["facial_skin_status"] = t.get("skin_status", "NORMAL")
+
+#             # Capture visual evidence snapshot for the nurse dashboard
+#             if "skeleton_view" in t and self.case_container["visual_evidence_b64"] is None:
+#                 _, buf = cv2.imencode('.jpg', t["skeleton_view"])
+#                 self.case_container["visual_evidence_b64"] = base64.b64encode(buf).decode('utf-8')
+
+#     def _fsm_worker(self):
+#         """
+#         Background Triage FSM Worker.
+#         Executes dialog turn-taking, speech listening, and LLM reasoning
+#         without blocking the main thread's 30 FPS camera feed.
+#         """
+#         time.sleep(1.0) # Allow camera display to initialize
+#         print("[*] Triage Reception Agent is active in background.")
+
+#         while self.running:
+#             try:
+#                 # -------------------------------------------------------------
+#                 # 1. State: PREPARE_STANDBY (Wake-Word Gate & Heartbeat)
+#                 # -------------------------------------------------------------
+#                 if self.current_state == KioskState.PREPARE_STANDBY:
+#                     if (time.time() - self.last_heartbeat) >= 240.0:
+#                         print("[*] [Heartbeat]: Refreshing VRAM residency...")
+#                         self.reasoning.warmup()
+#                         self.last_heartbeat = time.time()
+
+#                     with self.telemetry_lock:
+#                         patient_in_zone = self.latest_telemetry.get("patient_present", False)
+
+#                     if patient_in_zone:
+#                         print("[*] Patient in triage zone. Listening for speech or wake word...")
+#                         ambient_speech = self.audio.listen(language="th")
+#                         triggered, detected_lang = self.audio.detect_wake_word(ambient_speech)
+
+#                         if triggered or len(ambient_speech) > 0:
+#                             print(f"[+] Patient engagement confirmed (speech: '{ambient_speech}'). Launching intake...")
+#                             self._reset_case_container()
+#                             self.active_language = detected_lang if triggered else "th"
+#                             self.case_container["language"] = self.active_language
+#                             self.current_state = KioskState.GREETING_LANG_SELECT
+
+#                 # -------------------------------------------------------------
+#                 # 2. State: GREETING_LANG_SELECT
+#                 # -------------------------------------------------------------
+#                 elif self.current_state == KioskState.GREETING_LANG_SELECT:
+#                     self.audio.play_template("greeting", lang=self.active_language, block=True)
+#                     lang_reply = self.audio.listen(language=self.active_language)
+#                     print(f"[Language Preference]: \"{lang_reply}\"")
+
+#                     if any(w in lang_reply.lower() for w in ["english", "eng", "hello"]):
+#                         self.active_language = "en"
+#                     else:
+#                         self.active_language = "th"
+
+#                     self.case_container["language"] = self.active_language
+#                     self.current_state = KioskState.PDPA_CONSENT
+
+#                 # -------------------------------------------------------------
+#                 # 3. State: PDPA_CONSENT
+#                 # -------------------------------------------------------------
+#                 elif self.current_state == KioskState.PDPA_CONSENT:
+#                     self.audio.play_template("pdpa_notice", lang=self.active_language, block=True)
+#                     consent_reply = self.audio.listen(language=self.active_language)
+#                     self.case_container["conversation"].append({"role": "pdpa_response", "text": consent_reply})
+
+#                     deny_tokens = ["ไม่", "ปฏิเสธ", "no", "deny", "disagree", "not consent"]
+#                     if any(t in consent_reply.lower() for t in deny_tokens):
+#                         print("[-] Patient refused PDPA consent. Transitioning to MANUAL_ROUTING...")
+#                         self.case_container["exit_reason"] = ExitReason.PDPA_DENIED.value
+#                         self.current_state = KioskState.MANUAL_ROUTING
+#                     else:
+#                         self.case_container["pdpa_consented"] = True
+#                         self.current_state = KioskState.SYMPTOM_INTERVIEW
+
+#                 # -------------------------------------------------------------
+#                 # 3b. State: MANUAL_ROUTING
+#                 # -------------------------------------------------------------
+#                 elif self.current_state == KioskState.MANUAL_ROUTING:
+#                     self.audio.play_template("pdpa_denied", lang=self.active_language, block=True)
+#                     time.sleep(2.0)
+#                     print("[*] Patient routed to human desk. Resetting to PREPARE_STANDBY.\n" + "="*55)
+#                     self.current_state = KioskState.PREPARE_STANDBY
+
+#                 # -------------------------------------------------------------
+#                 # 4. State: SYMPTOM_INTERVIEW (Interactive Micro-Dialogue)
+#                 # -------------------------------------------------------------
+#                 elif self.current_state == KioskState.SYMPTOM_INTERVIEW:
+#                     self.audio.play_template("inquiry", lang=self.active_language, block=True)
+
+#                     interview_active = True
+#                     consecutive_pauses = 0
+
+#                     while interview_active and self.running:
+#                         chunk = self.audio.listen(language=self.active_language)
+#                         self._update_cumulative_visuals()
+
+#                         # Silence Handling
+#                         if len(chunk) == 0:
+#                             consecutive_pauses += 1
+#                             if consecutive_pauses == 1:
+#                                 self.audio.play_template("still_listening", lang=self.active_language, block=True)
+#                                 continue
+#                             elif consecutive_pauses == 2:
+#                                 self.audio.play_template("anything_else", lang=self.active_language, block=True)
+#                                 continue
+#                             else:
+#                                 print("[*] Extended silence verified. Finalizing symptom collection.")
+#                                 self.case_container["exit_reason"] = ExitReason.NORMAL_COMPLETE.value
+#                                 interview_active = False
+#                                 break
+
+#                         consecutive_pauses = 0
+#                         self.case_container["conversation"].append({"role": "patient", "text": chunk})
+
+#                         # Acute Emergency Preemption Check
+#                         is_preempted, preempt_esi = self.reasoning.check_acute_preemption(
+#                             chunk,
+#                             self.case_container["cumulative_visual_signs"]
+#                         )
+#                         if is_preempted:
+#                             print(f"[!] ACUTE EMERGENCY PREEMPTION TRIGGERED: ESI Level {preempt_esi}!")
+#                             self.case_container["exit_reason"] = ExitReason.EMERGENCY_INTERRUPT.value
+#                             interview_active = False
+#                             break
+
+#                         # Explicit Stopping Intent Check
+#                         if self.reasoning.is_stopping_phrase(chunk, lang=self.active_language):
+#                             print("[*] Patient explicitly requested completion.")
+#                             self.case_container["exit_reason"] = ExitReason.NORMAL_COMPLETE.value
+#                             interview_active = False
+#                             break
+
+#                         # Clinical Turn Evaluation
+#                         turn_eval = self.reasoning.evaluate_turn_and_probe(
+#                             utterance=chunk,
+#                             history=self.case_container["conversation"],
+#                             current_strikes=self.current_strikes,
+#                             lang=self.active_language
+#                         )
+#                         self.current_strikes = turn_eval["strikes"]
+
+#                         if turn_eval["ams_triggered"]:
+#                             print("[!] 3-Strike Rule Tripped: Altered Mental Status (AMS) Diagnosed.")
+#                             self.case_container["exit_reason"] = ExitReason.AMS_3_STRIKES.value
+#                             interview_active = False
+#                             break
+
+#                         elif turn_eval["action"] == "STEER_PIVOT":
+#                             self.audio.speak_dynamic(turn_eval["speech_output"], lang=self.active_language, block=True)
+#                             self.case_container["conversation"].append({"role": "kiosk_pivot", "text": turn_eval["speech_output"]})
+#                             continue
+
+#                         elif turn_eval["action"] == "PROBE_QUESTION":
+#                             self.audio.speak_dynamic(turn_eval["speech_output"], lang=self.active_language, block=True)
+#                             self.case_container["conversation"].append({"role": "kiosk_probe", "text": turn_eval["speech_output"]})
+#                             continue
+
+#                         elif turn_eval["action"] == "DETAILS_SUFFICIENT":
+#                             self.audio.play_template("anything_else", lang=self.active_language, block=True)
+#                             final_chunk = self.audio.listen(language=self.active_language)
+
+#                             if len(final_chunk) > 0 and not self.reasoning.is_stopping_phrase(final_chunk, lang=self.active_language):
+#                                 self.case_container["conversation"].append({"role": "patient", "text": final_chunk})
+
+#                             self.case_container["exit_reason"] = ExitReason.NORMAL_COMPLETE.value
+#                             interview_active = False
+#                             break
+
+#                     self.current_state = KioskState.FINALIZING_CASE
+
+#                 # -------------------------------------------------------------
+#                 # 5. State: FINALIZING_CASE (Clinical Synthesis)
+#                 # -------------------------------------------------------------
+#                 elif self.current_state == KioskState.FINALIZING_CASE:
+#                     raw_exit = self.case_container.get("exit_reason", ExitReason.NORMAL_COMPLETE.value)
+#                     exit_str = raw_exit.value if hasattr(raw_exit, "value") else str(raw_exit)
+
+#                     print(f"[*] Packaging case [{self.case_container['case_id']}] (Exit: {exit_str})...")
+#                     self._update_cumulative_visuals()
+
+#                     verdict = self.reasoning.evaluate_final_case(
+#                         conversation_history=self.case_container["conversation"],
+#                         visual_signs=self.case_container["cumulative_visual_signs"],
+#                         skin_status=self.case_container["facial_skin_status"],
+#                         exit_reason=raw_exit,
+#                         language=self.active_language
+#                     )
+#                     self.case_container["triage_verdict"] = verdict
+#                     print(f"[VERDICT]: ESI Level {verdict.get('esi_level')} ({verdict.get('urgency')})")
+#                     self.current_state = KioskState.DISPATCH_AND_RESET
+
+#                 # -------------------------------------------------------------
+#                 # 6. State: DISPATCH_AND_RESET
+#                 # -------------------------------------------------------------
+#                 elif self.current_state == KioskState.DISPATCH_AND_RESET:
+#                     raw_exit = self.case_container.get("exit_reason", ExitReason.NORMAL_COMPLETE.value)
+#                     exit_str = raw_exit.value if hasattr(raw_exit, "value") else str(raw_exit)
+
+#                     if exit_str == ExitReason.EMERGENCY_INTERRUPT.value:
+#                         self.audio.play_template("emergency_alert", lang=self.active_language, block=True)
+#                     elif exit_str == ExitReason.AMS_3_STRIKES.value:
+#                         self.audio.play_template("ams_alert", lang=self.active_language, block=True)
+#                     else:
+#                         self.audio.play_template("wrapup", lang=self.active_language, block=True)
+
+#                     self.conveyor_belt.enqueue_case(self.case_container)
+#                     print("[*] Case finalized. Kiosk returning to PREPARE_STANDBY.\n" + "="*55)
+#                     self.current_state = KioskState.PREPARE_STANDBY
+
+#                 time.sleep(0.05)
+
+#             except Exception as e:
+#                 print(f"[!] FSM Encounter Exception: {e}")
+#                 time.sleep(1.0)
+
+#     def run(self):
+#         """
+#         Main-Thread Execution Loop.
+#         macOS Cocoa requires all NSWindow / cv2.imshow calls on the main thread.
+#         """
+#         # Launch FSM & Dialogue loop in a background daemon thread
+#         fsm_thread = threading.Thread(target=self._fsm_worker, daemon=True)
+#         fsm_thread.start()
+
+#         cap = cv2.VideoCapture(SystemConfig.CAMERA_INDEX)
+#         cap.set(cv2.CAP_PROP_FRAME_WIDTH, SystemConfig.FRAME_WIDTH)
+#         cap.set(cv2.CAP_PROP_FRAME_HEIGHT, SystemConfig.FRAME_HEIGHT)
+
+#         print("[*] Camera capture active on Main Thread.")
+
+#         try:
+#             while self.running:
+#                 ret, frame = cap.read()
+#                 if not ret:
+#                     time.sleep(0.01)
+#                     continue
+
+#                 # Process perception
+#                 telemetry = self.vision.process_frame(frame)
+#                 with self.telemetry_lock:
+#                     self.latest_telemetry = telemetry
+
+#                 # Render display windows on Main Thread (Cocoa Safe)
+#                 if SystemConfig.SHOW_DUAL_WINDOWS:
+#                     cv2.imshow("Kiosk - Clean Patient View", telemetry["clean_view"])
+#                     cv2.imshow("Kiosk - Diagnostic Skeleton View", telemetry["skeleton_view"])
+#                 else:
+#                     cv2.imshow("Smart Triage Kiosk", telemetry["clean_view"])
+
+#                 if cv2.waitKey(1) & 0xFF == ord('q'):
+#                     self.running = False
+#                     break
+
+#         except KeyboardInterrupt:
+#             print("\n[!] Powering down systems gracefully...")
+#         finally:
+#             self.running = False
+#             self.conveyor_belt.running = False
+#             cap.release()
+#             cv2.destroyAllWindows()
+#             self.vision.release()
+#             self.audio.release()
+#             print("[+] Kiosk successfully and safely offline.")
+
+# if __name__ == "__main__":
+#     kiosk = SmartReceptionTriageKiosk()
+#     kiosk.run()
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+"""
+Main.py - Master Kiosk Orchestrator (Agentic Action Architecture)
+Executes Agent Actions, Local JPEG Evidence Storage, and Proactive Visual Inquiries.
+"""
+
+import os
+import cv2
+import time
+import json
+import queue
+import threading
+import requests
+
+from config import SystemConfig, KioskState, ExitReason
+from V_Module import VisionEngine
+from A_Module import AudioEngine
+from R_Module import ReasoningEngine
+
+
+class ConveyorBeltWorker(threading.Thread):
+    """Background Outbox Spooler (The Conveyor Belt)."""
+    def __init__(self, spool_dir: str, endpoint: str):
+        super().__init__(daemon=True)
+        self.spool_dir = spool_dir
+        self.endpoint = endpoint
+        self.queue = queue.Queue()
+        self.running = True
+        os.makedirs(self.spool_dir, exist_ok=True)
+
+    def enqueue_case(self, case_container: dict):
+        case_id = case_container.get("case_id", f"CASE-{int(time.time())}")
+        disk_path = os.path.join(self.spool_dir, f"{case_id}.json")
+
+        try:
+            with open(disk_path, "w", encoding="utf-8") as f:
+                json.dump(case_container, f, ensure_ascii=False, indent=2)
+        except Exception as e:
+            print(f"[!] Warning: Failed to spool case to local disk: {e}")
+
+        self.queue.put((case_id, disk_path, case_container))
+        print(f"[+] [Conveyor Belt]: Case {case_id} queued for background transmission.")
+
+    def run(self):
+        while self.running:
+            try:
+                case_id, disk_path, payload = self.queue.get(timeout=1.0)
+            except queue.Empty:
+                continue
+
+            transmitted = False
+            while not transmitted and self.running:
+                try:
+                    res = requests.post(self.endpoint, json=payload, timeout=SystemConfig.HTTP_TIMEOUT)
+                    if res.status_code in [200, 201]:
+                        print(f"[✓] [Conveyor Belt]: Case {case_id} delivered to Nurse Dashboard.")
+                        transmitted = True
+                        if os.path.exists(disk_path):
+                            os.remove(disk_path)
+                    else:
+                        print(f"[!] [Conveyor Belt]: Dashboard status {res.status_code}. Retrying in {SystemConfig.CONVEYOR_RETRY_INTERVAL}s...")
+                        time.sleep(SystemConfig.CONVEYOR_RETRY_INTERVAL)
+                except requests.exceptions.RequestException:
+                    print(f"[-] [Conveyor Belt]: Dashboard unreachable. Retrying in {SystemConfig.CONVEYOR_RETRY_INTERVAL}s...")
+                    time.sleep(SystemConfig.CONVEYOR_RETRY_INTERVAL)
+
+            self.queue.task_done()
+
+
+class SmartReceptionTriageKiosk:
+    def __init__(self):
+        print(">> Initializing Stark Industries Smart Reception Triage Kiosk (Agentic Mode)...")
+        self.vision = VisionEngine()
+        self.audio = AudioEngine()
+        self.reasoning = ReasoningEngine()
+
+        self.last_heartbeat = time.time()
+
+        # Arm the Conveyor Belt Outbox Worker
+        self.conveyor_belt = ConveyorBeltWorker(
+            spool_dir=SystemConfig.OUTBOX_SPOOL_DIR,
+            endpoint=SystemConfig.NURSE_DASHBOARD_ENDPOINT
+        )
+        self.conveyor_belt.start()
+
+        # Evidence folder setup
+        self.evidence_dir = getattr(SystemConfig, "EVIDENCE_DIR", os.path.join(SystemConfig.BASE_DIR, "evidence"))
+        os.makedirs(self.evidence_dir, exist_ok=True)
+
+        self.current_state = KioskState.PREPARE_STANDBY
+        self.active_language = "th"
+        self.running = True
+        self.current_strikes = 0
+
+        self.latest_telemetry = {}
+        self.telemetry_lock = threading.Lock()
+
+        self.case_container = {}
+        self._reset_case_container()
+
+    def _reset_case_container(self):
+        """Initializes a fresh clinical case container."""
+        self.current_strikes = 0
+        self.case_container = {
+            "case_id": f"CASE-{int(time.time())}",
+            "start_time": time.strftime("%Y-%m-%d %H:%M:%S"),
+            "language": self.active_language,
+            "pdpa_consented": False,
+            "exit_reason": None,
+            "conversation": [],
+            "cumulative_visual_signs": {
+                "chest_clutching": False,
+                "abdominal_clutching": False,
+                "head_clutching": False
+            },
+            "facial_skin_status": "NORMAL",
+            "visual_evidence_path": None,
+            "triage_verdict": None
+        }
+
+    def _update_cumulative_visuals(self):
+        """Updates sustained gestures and captures clean JPEG evidence without Base64 clutter."""
+        with self.telemetry_lock:
+            t = self.latest_telemetry
+            
+            # Use SUSTAINED gestures (>=3.0s) to eliminate the passing-hand latching bug!
+            sustained = t.get("sustained_gestures", {})
+            for key in ["chest_clutching", "abdominal_clutching", "head_clutching"]:
+                if sustained.get(key, False):
+                    self.case_container["cumulative_visual_signs"][key] = True
+
+            self.case_container["facial_skin_status"] = t.get("skin_status", "NORMAL")
+
+            # Save clean JPEG to disk
+            if "clean_view" in t and self.case_container["visual_evidence_path"] is None:
+                img_path = os.path.join(self.evidence_dir, f"{self.case_container['case_id']}.jpg")
+                cv2.imwrite(img_path, t["clean_view"])
+                self.case_container["visual_evidence_path"] = img_path
+                print(f"[i] Captured JPEG Evidence: {img_path}")
+
+    def _fsm_worker(self):
+        """Background Agentic FSM Worker."""
+        time.sleep(1.0)
+        print("[*] Autonomous Reception Agent is active in background.")
+
+        while self.running:
+            try:
+                # -------------------------------------------------------------
+                # 1. State: PREPARE_STANDBY
+                # -------------------------------------------------------------
+                if self.current_state == KioskState.PREPARE_STANDBY:
+                    if (time.time() - self.last_heartbeat) >= 240.0:
+                        self.reasoning.warmup()
+                        self.last_heartbeat = time.time()
+
+                    with self.telemetry_lock:
+                        patient_in_zone = self.latest_telemetry.get("patient_present", False)
+
+                    if patient_in_zone:
+                        print("[*] Patient in triage zone. Listening for speech or wake word...")
+                        # Change this:
+                        # ambient_speech = self.audio.listen(language="th")
+                        # To this:
+                        ambient_speech = self.audio.listen(language="auto")
+                        triggered, detected_lang = self.audio.detect_wake_word(ambient_speech)
+
+                        if triggered or len(ambient_speech) > 0:
+                            print(f"[+] Patient engagement confirmed. Launching intake...")
+                            self._reset_case_container()
+                            self.active_language = detected_lang if triggered else "th"
+                            self.case_container["language"] = self.active_language
+                            self.current_state = KioskState.GREETING_LANG_SELECT
+
+                # -------------------------------------------------------------
+                # 2. State: GREETING_LANG_SELECT
+                # -------------------------------------------------------------
+                elif self.current_state == KioskState.GREETING_LANG_SELECT:
+                    self.audio.play_template("greeting", lang=self.active_language, block=True)
+                    lang_reply = self.audio.listen(language=self.active_language)
+                    print(f"[Language Preference]: \"{lang_reply}\"")
+
+                    if any(w in lang_reply.lower() for w in ["english", "eng", "hello"]):
+                        self.active_language = "en"
+                    else:
+                        self.active_language = "th"
+
+                    self.case_container["language"] = self.active_language
+                    self.current_state = KioskState.PDPA_CONSENT
+
+                # -------------------------------------------------------------
+                # 3. State: PDPA_CONSENT
+                # -------------------------------------------------------------
+                elif self.current_state == KioskState.PDPA_CONSENT:
+                    self.audio.play_template("pdpa_notice", lang=self.active_language, block=True)
+                    consent_reply = self.audio.listen(language=self.active_language)
+                    self.case_container["conversation"].append({"role": "pdpa_response", "text": consent_reply})
+
+                    # Check for refusal
+                    deny_tokens = ["ไม่", "ปฏิเสธ", "no", "deny", "disagree", "not consent"]
+                    if any(t in consent_reply.lower() for t in deny_tokens):
+                        print("[-] Patient refused PDPA consent. Transitioning to MANUAL_ROUTING...")
+                        self.case_container["exit_reason"] = ExitReason.PDPA_DENIED.value
+                        self.current_state = KioskState.MANUAL_ROUTING
+                    else:
+                        self.case_container["pdpa_consented"] = True
+                        self.current_state = KioskState.SYMPTOM_INTERVIEW
+
+                # -------------------------------------------------------------
+                # 3b. State: MANUAL_ROUTING
+                # -------------------------------------------------------------
+                elif self.current_state == KioskState.MANUAL_ROUTING:
+                    self.audio.play_template("pdpa_denied", lang=self.active_language, block=True)
+                    time.sleep(2.0)
+                    print("[*] Patient routed to human desk. Resetting to PREPARE_STANDBY.\n" + "="*55)
+                    self.current_state = KioskState.PREPARE_STANDBY
+
+                # -------------------------------------------------------------
+                # 4. State: SYMPTOM_INTERVIEW (Agentic Action Loop)
+                # -------------------------------------------------------------
+                elif self.current_state == KioskState.SYMPTOM_INTERVIEW:
+                    # PROACTIVE VISUAL INITIATION:
+                    # If patient is actively clutching something upon arrival, ask about it directly!
+                    with self.telemetry_lock:
+                        dom_gesture = self.latest_telemetry.get("dominant_current_gesture", "NONE")
+
+                    proactive_prompt = self.reasoning.get_proactive_visual_prompt(dom_gesture, lang=self.active_language)
+
+                    if proactive_prompt:
+                        print(f"[*] [Proactive Visual Cue]: Triggering inquiry for {dom_gesture}")
+                        self.audio.speak_dynamic(proactive_prompt, lang=self.active_language, block=True)
+                        self.case_container["conversation"].append({"role": "kiosk_proactive", "text": proactive_prompt})
+                    else:
+                        self.audio.play_template("inquiry", lang=self.active_language, block=True)
+
+                    interview_active = True
+                    consecutive_pauses = 0
+
+                    while interview_active and self.running:
+                        turn_start_time = time.time() # ⏱️ Start Turn Timer
+
+                        t_stt_start = time.time()
+                        chunk = self.audio.listen(language=self.active_language)
+                        stt_duration = time.time() - t_stt_start
+                        
+                        self._update_cumulative_visuals()
+
+                        # Silence Handling
+                        if len(chunk) == 0:
+                            consecutive_pauses += 1
+                            if consecutive_pauses == 1:
+                                self.audio.play_template("still_listening", lang=self.active_language, block=True)
+                                continue
+                            elif consecutive_pauses == 2:
+                                self.audio.play_template("anything_else", lang=self.active_language, block=True)
+                                continue
+                            else:
+                                print("[*] Extended silence verified. Finalizing encounter.")
+                                self.case_container["exit_reason"] = ExitReason.NORMAL_COMPLETE.value
+                                interview_active = False
+                                break
+
+                        consecutive_pauses = 0
+                        self.case_container["conversation"].append({"role": "patient", "text": chunk})
+
+                        # Get current telemetry snapshot for Llama
+                        with self.telemetry_lock:
+                            v_telemetry = self.latest_telemetry
+
+                        # DISPATCH TO AGENT CONTROLLER (Llama 3.2 In Charge)
+                        action_frame = self.reasoning.dispatch_agent_turn(
+                            utterance=chunk,
+                            history=self.case_container["conversation"],
+                            visual_telemetry=v_telemetry,
+                            current_strikes=self.current_strikes,
+                            active_lang=self.active_language
+                        )
+
+                        action = action_frame.get("action", "CONTINUE_TRIAGE")
+                        spoken_resp = action_frame.get("spoken_response", "")
+                        self.current_strikes = action_frame.get("strikes", self.current_strikes)
+
+                        print(f"[*] [Agent Decision]: Action={action} | Spoken=\"{spoken_resp}\"")
+
+                        # ACTION 1: Switch Language Mid-Conversation
+                        if action == "SWITCH_LANGUAGE":
+                            new_lang = action_frame.get("target_language", "en")
+                            print(f"[!] AGENT COMMAND: Dynamically switching language from {self.active_language} -> {new_lang}")
+                            self.active_language = new_lang
+                            self.case_container["language"] = self.active_language
+                            self.audio.speak_dynamic(spoken_resp, lang=self.active_language, block=True)
+                            self.case_container["conversation"].append({"role": "kiosk_action", "text": spoken_resp})
+                            continue
+
+                        # ACTION 2: Cancel and Exit
+                        elif action == "CANCEL_AND_EXIT":
+                            print("[!] AGENT COMMAND: Patient requested early cancellation.")
+                            self.audio.speak_dynamic(spoken_resp, lang=self.active_language, block=True)
+                            self.case_container["exit_reason"] = "USER_CANCELLED"
+                            interview_active = False
+                            break
+
+                        # ACTION 3: Call Human Nurse
+                        elif action == "CALL_HUMAN_NURSE":
+                            print("[!] AGENT COMMAND: Summoning human triage staff.")
+                            self.audio.speak_dynamic(spoken_resp, lang=self.active_language, block=True)
+                            self.case_container["exit_reason"] = "HUMAN_NURSE_SUMMONED"
+                            interview_active = False
+                            break
+
+                        # ACTION 4: Emergency Abort (Acute Decompensation)
+                        elif action == "EMERGENCY_ABORT":
+                            print("[!] AGENT COMMAND: High-Acuity Emergency Abort triggered!")
+                            self.audio.speak_dynamic(spoken_resp, lang=self.active_language, block=True)
+                            self.case_container["exit_reason"] = ExitReason.EMERGENCY_INTERRUPT.value
+                            interview_active = False
+                            break
+
+                        # ACTION 5: 3-Strike Cognitive Failure (AMS)
+                        elif action == "TRIGGER_AMS":
+                            print("[!] 3-Strike Rule Tripped: Altered Mental Status (AMS).")
+                            self.audio.play_template("ams_alert", lang=self.active_language, block=True)
+                            self.case_container["exit_reason"] = ExitReason.AMS_3_STRIKES.value
+                            interview_active = False
+                            break
+
+                        # ACTION 6: Normal Dialogue Turn (OPQRST Probing / Bedside Pivot)
+                        else:
+                            self.audio.speak_dynamic(spoken_resp, lang=self.active_language, block=True)
+                            self.case_container["conversation"].append({"role": "kiosk_agent", "text": spoken_resp})
+                            continue
+
+                    self.current_state = KioskState.FINALIZING_CASE
+
+                # -------------------------------------------------------------
+                # 5. State: FINALIZING_CASE (SOAP & ESI Synthesis)
+                # -------------------------------------------------------------
+                elif self.current_state == KioskState.FINALIZING_CASE:
+                    raw_exit = self.case_container.get("exit_reason", ExitReason.NORMAL_COMPLETE.value)
+                    exit_str = raw_exit.value if hasattr(raw_exit, "value") else str(raw_exit)
+
+                    print(f"[*] Packaging case [{self.case_container['case_id']}] (Exit: {exit_str})...")
+                    self._update_cumulative_visuals()
+
+                    verdict = self.reasoning.evaluate_final_case(
+                        conversation_history=self.case_container["conversation"],
+                        visual_signs=self.case_container["cumulative_visual_signs"],
+                        skin_status=self.case_container["facial_skin_status"],
+                        exit_reason=raw_exit,
+                        language=self.active_language
+                    )
+                    self.case_container["triage_verdict"] = verdict
+                    print(f"[VERDICT]: ESI Level {verdict.get('esi_level')} ({verdict.get('urgency')})")
+                    self.current_state = KioskState.DISPATCH_AND_RESET
+
+                # -------------------------------------------------------------
+                # 6. State: DISPATCH_AND_RESET
+                # -------------------------------------------------------------
+                elif self.current_state == KioskState.DISPATCH_AND_RESET:
+                    raw_exit = self.case_container.get("exit_reason", ExitReason.NORMAL_COMPLETE.value)
+                    exit_str = raw_exit.value if hasattr(raw_exit, "value") else str(raw_exit)
+
+                    if exit_str == ExitReason.EMERGENCY_INTERRUPT.value:
+                        self.audio.play_template("emergency_alert", lang=self.active_language, block=True)
+                    elif exit_str == ExitReason.AMS_3_STRIKES.value:
+                        self.audio.play_template("ams_alert", lang=self.active_language, block=True)
+                    elif exit_str not in ["USER_CANCELLED", "HUMAN_NURSE_SUMMONED"]:
+                        self.audio.play_template("wrapup", lang=self.active_language, block=True)
+
+                    # Enqueue to background Conveyor Belt (<1ms)
+                    self.conveyor_belt.enqueue_case(self.case_container)
+                    print("[*] Case finalized. Kiosk returning to PREPARE_STANDBY.\n" + "="*55)
+                    self.current_state = KioskState.PREPARE_STANDBY
+
+                time.sleep(0.05)
+
+            except Exception as e:
+                print(f"[!] FSM Encounter Exception: {e}")
+                time.sleep(1.0)
+
+    def run(self):
+        """Main-Thread GUI Capture Loop (macOS Cocoa Compliant)."""
+        fsm_thread = threading.Thread(target=self._fsm_worker, daemon=True)
+        fsm_thread.start()
+
+        cap = cv2.VideoCapture(SystemConfig.CAMERA_INDEX)
+        cap.set(cv2.CAP_PROP_FRAME_WIDTH, SystemConfig.FRAME_WIDTH)
+        cap.set(cv2.CAP_PROP_FRAME_HEIGHT, SystemConfig.FRAME_HEIGHT)
+
+        print("[*] Camera capture active on Main Thread.")
+
+        try:
+            while self.running:
+                ret, frame = cap.read()
+                if not ret:
+                    time.sleep(0.01)
+                    continue
+
+                telemetry = self.vision.process_frame(frame)
+                with self.telemetry_lock:
+                    self.latest_telemetry = telemetry
+
+                if SystemConfig.SHOW_DUAL_WINDOWS:
+                    cv2.imshow("Kiosk - Clean Patient View", telemetry["clean_view"])
+                    cv2.imshow("Kiosk - Diagnostic Skeleton View", telemetry["skeleton_view"])
+                else:
+                    cv2.imshow("Smart Triage Kiosk", telemetry["clean_view"])
+
+                if cv2.waitKey(1) & 0xFF == ord('q'):
+                    self.running = False
+                    break
+
+        except KeyboardInterrupt:
+            print("\n[!] Powering down systems gracefully...")
+        finally:
+            self.running = False
+            self.conveyor_belt.running = False
+            cap.release()
+            cv2.destroyAllWindows()
+            self.vision.release()
+            self.audio.release()
+            print("[+] Kiosk successfully and safely offline.")
+
+
+if __name__ == "__main__":
+    kiosk = SmartReceptionTriageKiosk()
+    kiosk.run()
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+"Work ONE!!!"
+"""
+Main.py - Master Kiosk Orchestrator (macOS Cocoa Main-Thread Compliant)
+Agentic Action Execution, Instant Cancellation, TRIAGE_COMPLETE Handling, and Telemetry.
+"""
+
+import os
+import cv2
+import time
+import json
+import queue
+import threading
+import requests
+
+from config import SystemConfig, KioskState, ExitReason
+from V_Module import VisionEngine
+from A_Module import AudioEngine
+from R_Module import ReasoningEngine
+
+
+class ConveyorBeltWorker(threading.Thread):
+    """Background Outbox Spooler (The Conveyor Belt)."""
+    def __init__(self, spool_dir: str, endpoint: str):
+        super().__init__(daemon=True)
+        self.spool_dir = spool_dir
+        self.endpoint = endpoint
+        self.queue = queue.Queue()
+        self.running = True
+        os.makedirs(self.spool_dir, exist_ok=True)
+
+    def enqueue_case(self, case_container: dict):
+        case_id = case_container.get("case_id", f"CASE-{int(time.time())}")
+        disk_path = os.path.join(self.spool_dir, f"{case_id}.json")
+
+        try:
+            with open(disk_path, "w", encoding="utf-8") as f:
+                json.dump(case_container, f, ensure_ascii=False, indent=2)
+        except Exception as e:
+            print(f"[!] Warning: Failed to spool case to local disk: {e}")
+
+        self.queue.put((case_id, disk_path, case_container))
+        print(f"[+] [Conveyor Belt]: Case {case_id} queued for background transmission.")
+
+    def run(self):
+        while self.running:
+            try:
+                case_id, disk_path, payload = self.queue.get(timeout=1.0)
+            except queue.Empty:
+                continue
+
+            transmitted = False
+            while not transmitted and self.running:
+                try:
+                    res = requests.post(self.endpoint, json=payload, timeout=SystemConfig.HTTP_TIMEOUT)
+                    if res.status_code in [200, 201]:
+                        print(f"[✓] [Conveyor Belt]: Case {case_id} delivered to Nurse Dashboard.")
+                        transmitted = True
+                        if os.path.exists(disk_path):
+                            os.remove(disk_path)
+                    else:
+                        print(f"[!] [Conveyor Belt]: Dashboard status {res.status_code}. Retrying in {SystemConfig.CONVEYOR_RETRY_INTERVAL}s...")
+                        time.sleep(SystemConfig.CONVEYOR_RETRY_INTERVAL)
+                except requests.exceptions.RequestException:
+                    print(f"[-] [Conveyor Belt]: Dashboard unreachable. Retrying in {SystemConfig.CONVEYOR_RETRY_INTERVAL}s...")
+                    time.sleep(SystemConfig.CONVEYOR_RETRY_INTERVAL)
+
+            self.queue.task_done()
+
+
+class SmartReceptionTriageKiosk:
+    def __init__(self):
+        print(">> Initializing Stark Industries Smart Reception Triage Kiosk (Agentic Mode)...")
+        self.vision = VisionEngine()
+        self.audio = AudioEngine()
+        self.reasoning = ReasoningEngine()
+
+        self.last_heartbeat = time.time()
+
+        # Arm the Conveyor Belt Outbox Worker
+        self.conveyor_belt = ConveyorBeltWorker(
+            spool_dir=SystemConfig.OUTBOX_SPOOL_DIR,
+            endpoint=SystemConfig.NURSE_DASHBOARD_ENDPOINT
+        )
+        self.conveyor_belt.start()
+
+        # Evidence folder setup
+        self.evidence_dir = getattr(SystemConfig, "EVIDENCE_DIR", os.path.join(SystemConfig.BASE_DIR, "evidence"))
+        os.makedirs(self.evidence_dir, exist_ok=True)
+
+        self.current_state = KioskState.PREPARE_STANDBY
+        self.active_language = "th"
+        self.running = True
+        self.current_strikes = 0
+
+        self.latest_telemetry = {}
+        self.telemetry_lock = threading.Lock()
+
+        self.case_container = {}
+        self._reset_case_container()
+
+    def _reset_case_container(self):
+        """Initializes a fresh clinical case container."""
+        self.current_strikes = 0
+        self.case_container = {
+            "case_id": f"CASE-{int(time.time())}",
+            "start_time": time.strftime("%Y-%m-%d %H:%M:%S"),
+            "language": self.active_language,
+            "pdpa_consented": False,
+            "exit_reason": None,
+            "conversation": [],
+            "cumulative_visual_signs": {
+                "chest_clutching": False,
+                "abdominal_clutching": False,
+                "head_clutching": False
+            },
+            "facial_skin_status": "NORMAL",
+            "visual_evidence_path": None,
+            "triage_verdict": None
+        }
+
+    def _update_cumulative_visuals(self):
+        """Updates sustained gestures and captures clean JPEG evidence without Base64 clutter."""
+        with self.telemetry_lock:
+            t = self.latest_telemetry
+            
+            # Use SUSTAINED gestures (>=3.0s) to eliminate the passing-hand latching bug!
+            sustained = t.get("sustained_gestures", {})
+            for key in ["chest_clutching", "abdominal_clutching", "head_clutching"]:
+                if sustained.get(key, False):
+                    self.case_container["cumulative_visual_signs"][key] = True
+
+            self.case_container["facial_skin_status"] = t.get("skin_status", "NORMAL")
+
+            # Save clean JPEG to disk
+            if "clean_view" in t and self.case_container["visual_evidence_path"] is None:
+                img_path = os.path.join(self.evidence_dir, f"{self.case_container['case_id']}.jpg")
+                cv2.imwrite(img_path, t["clean_view"])
+                self.case_container["visual_evidence_path"] = img_path
+                print(f"[i] Captured JPEG Evidence: {img_path}")
+
+    def _fsm_worker(self):
+        """Background Agentic FSM Worker with Turn-by-Turn Telemetry Timers."""
+        time.sleep(1.0)
+        print("[*] Autonomous Reception Agent is active in background.")
+
+        while self.running:
+            try:
+                # -------------------------------------------------------------
+                # 1. State: PREPARE_STANDBY
+                # -------------------------------------------------------------
+                if self.current_state == KioskState.PREPARE_STANDBY:
+                    if (time.time() - self.last_heartbeat) >= 240.0:
+                        self.reasoning.warmup()
+                        self.last_heartbeat = time.time()
+
+                    with self.telemetry_lock:
+                        patient_in_zone = self.latest_telemetry.get("patient_present", False)
+
+                    if patient_in_zone:
+                        print("[*] Patient in triage zone. Listening for speech or wake word...")
+                        ambient_speech = self.audio.listen(language="auto")
+                        triggered, detected_lang = self.audio.detect_wake_word(ambient_speech)
+
+                        if triggered or len(ambient_speech) > 0:
+                            print(f"[+] Patient engagement confirmed. Launching intake...")
+                            self._reset_case_container()
+                            self.active_language = detected_lang if triggered else "th"
+                            self.case_container["language"] = self.active_language
+                            self.current_state = KioskState.GREETING_LANG_SELECT
+
+                # -------------------------------------------------------------
+                # 2. State: GREETING_LANG_SELECT
+                # -------------------------------------------------------------
+                elif self.current_state == KioskState.GREETING_LANG_SELECT:
+                    self.audio.play_template("greeting", lang=self.active_language, block=True)
+                    lang_reply = self.audio.listen(language=self.active_language)
+                    print(f"[Language Preference]: \"{lang_reply}\"")
+
+                    if any(w in lang_reply.lower() for w in ["english", "eng", "hello"]):
+                        self.active_language = "en"
+                    else:
+                        self.active_language = "th"
+
+                    self.case_container["language"] = self.active_language
+                    self.current_state = KioskState.PDPA_CONSENT
+
+                # -------------------------------------------------------------
+                # 3. State: PDPA_CONSENT
+                # -------------------------------------------------------------
+                elif self.current_state == KioskState.PDPA_CONSENT:
+                    self.audio.play_template("pdpa_notice", lang=self.active_language, block=True)
+                    consent_reply = self.audio.listen(language=self.active_language)
+                    self.case_container["conversation"].append({"role": "pdpa_response", "text": consent_reply})
+
+                    # Check for refusal
+                    deny_tokens = ["ไม่", "ปฏิเสธ", "no", "deny", "disagree", "not consent"]
+                    if any(t in consent_reply.lower() for t in deny_tokens):
+                        print("[-] Patient refused PDPA consent. Transitioning to MANUAL_ROUTING...")
+                        self.case_container["exit_reason"] = ExitReason.PDPA_DENIED.value
+                        self.current_state = KioskState.MANUAL_ROUTING
+                    else:
+                        self.case_container["pdpa_consented"] = True
+                        self.current_state = KioskState.SYMPTOM_INTERVIEW
+
+                # -------------------------------------------------------------
+                # 3b. State: MANUAL_ROUTING
+                # -------------------------------------------------------------
+                elif self.current_state == KioskState.MANUAL_ROUTING:
+                    self.audio.play_template("pdpa_denied", lang=self.active_language, block=True)
+                    time.sleep(2.0)
+                    print("[*] Patient routed to human desk. Resetting to PREPARE_STANDBY.\n" + "="*55)
+                    self.current_state = KioskState.PREPARE_STANDBY
+
+                # -------------------------------------------------------------
+                # 4. State: SYMPTOM_INTERVIEW (Agentic Action Loop + Timers)
+                # -------------------------------------------------------------
+                elif self.current_state == KioskState.SYMPTOM_INTERVIEW:
+                    with self.telemetry_lock:
+                        dom_gesture = self.latest_telemetry.get("dominant_current_gesture", "NONE")
+
+                    proactive_prompt = self.reasoning.get_proactive_visual_prompt(dom_gesture, lang=self.active_language)
+
+                    if proactive_prompt:
+                        print(f"[*] [Proactive Visual Cue]: Triggering inquiry for {dom_gesture}")
+                        self.audio.speak_dynamic(proactive_prompt, lang=self.active_language, block=True)
+                        self.case_container["conversation"].append({"role": "kiosk_proactive", "text": proactive_prompt})
+                    else:
+                        self.audio.play_template("inquiry", lang=self.active_language, block=True)
+
+                    interview_active = True
+                    consecutive_pauses = 0
+
+                    while interview_active and self.running:
+                        turn_start_time = time.time()  # ⏱️ Start Turn Timer
+
+                        # 1. Capture speech (STT)
+                        t_stt_start = time.time()
+                        chunk = self.audio.listen(language=self.active_language)
+                        stt_duration = time.time() - t_stt_start
+
+                        self._update_cumulative_visuals()
+
+                        # Silence Handling
+                        if len(chunk) == 0:
+                            consecutive_pauses += 1
+                            if consecutive_pauses == 1:
+                                self.audio.play_template("still_listening", lang=self.active_language, block=True)
+                                continue
+                            elif consecutive_pauses == 2:
+                                self.audio.play_template("anything_else", lang=self.active_language, block=True)
+                                continue
+                            else:
+                                print("[*] Extended silence verified. Finalizing encounter.")
+                                self.case_container["exit_reason"] = ExitReason.NORMAL_COMPLETE.value
+                                interview_active = False
+                                break
+
+                        consecutive_pauses = 0
+                        self.case_container["conversation"].append({"role": "patient", "text": chunk})
+
+                        # Emergency Preemption Check
+                        is_preempted, preempt_esi = self.reasoning.check_acute_preemption(
+                            chunk,
+                            self.case_container["cumulative_visual_signs"]
+                        )
+                        if is_preempted:
+                            print(f"[!] ACUTE EMERGENCY PREEMPTION: ESI Level {preempt_esi}!")
+                            self.case_container["exit_reason"] = ExitReason.EMERGENCY_INTERRUPT.value
+                            interview_active = False
+                            break
+
+                        # Stopping Intent Check ("แค่นี้ครับ" / "หมดแล้ว")
+                        if self.reasoning.is_stopping_phrase(chunk, lang=self.active_language):
+                            print("[*] Patient explicitly requested completion.")
+                            self.case_container["exit_reason"] = ExitReason.NORMAL_COMPLETE.value
+                            interview_active = False
+                            break
+
+                        # 2. Agent Decision (LLM Reasoning)
+                        with self.telemetry_lock:
+                            v_telemetry = self.latest_telemetry
+
+                        action_frame = self.reasoning.dispatch_agent_turn(
+                            utterance=chunk,
+                            history=self.case_container["conversation"],
+                            visual_telemetry=v_telemetry,
+                            current_strikes=self.current_strikes,
+                            active_lang=self.active_language
+                        )
+
+                        action = action_frame.get("action", "CONTINUE_TRIAGE")
+                        spoken_resp = action_frame.get("spoken_response", "")
+                        llm_duration = action_frame.get("llm_latency_sec", 0.0)
+                        self.current_strikes = action_frame.get("strikes", self.current_strikes)
+
+                        print(f"[*] [Agent Decision]: Action={action} | Spoken=\"{spoken_resp}\"")
+
+                        # 3. Audio Playback (TTS)
+                        t_tts_start = time.time()
+
+                        # ACTION: TRIAGE COMPLETE (Onset + Severity gathered -> Stop asking!)
+                        if action == "TRIAGE_COMPLETE":
+                            print("[✓] All necessary clinical data gathered. Concluding interview.")
+                            self.audio.play_template("anything_else", lang=self.active_language, block=True)
+                            final_reply = self.audio.listen(language=self.active_language)
+                            
+                            if len(final_reply) > 0 and not self.reasoning.is_stopping_phrase(final_reply, lang=self.active_language):
+                                self.case_container["conversation"].append({"role": "patient", "text": final_reply})
+
+                            self.case_container["exit_reason"] = ExitReason.NORMAL_COMPLETE.value
+                            interview_active = False
+                            break
+
+                        # ACTION: Cancel and Exit (Instant Reset - Bypasses slow SOAP generation)
+                        elif action == "CANCEL_AND_EXIT":
+                            print("[!] AGENT COMMAND: Patient requested early cancellation.")
+                            self.audio.speak_dynamic(spoken_resp, lang=self.active_language, block=True)
+                            self.case_container["exit_reason"] = "USER_CANCELLED"
+                            interview_active = False
+                            break
+
+                        elif action == "SWITCH_LANGUAGE":
+                            new_lang = action_frame.get("target_language", "en")
+                            print(f"[!] AGENT COMMAND: Dynamically switching language from {self.active_language} -> {new_lang}")
+                            self.active_language = new_lang
+                            self.case_container["language"] = self.active_language
+                            self.audio.speak_dynamic(spoken_resp, lang=self.active_language, block=True)
+                            self.case_container["conversation"].append({"role": "kiosk_action", "text": spoken_resp})
+
+                        elif action == "CALL_HUMAN_NURSE":
+                            print("[!] AGENT COMMAND: Summoning human triage staff.")
+                            self.audio.speak_dynamic(spoken_resp, lang=self.active_language, block=True)
+                            self.case_container["exit_reason"] = "HUMAN_NURSE_SUMMONED"
+                            interview_active = False
+                            break
+
+                        elif action == "EMERGENCY_ABORT":
+                            print("[!] AGENT COMMAND: High-Acuity Emergency Abort triggered!")
+                            self.audio.speak_dynamic(spoken_resp, lang=self.active_language, block=True)
+                            self.case_container["exit_reason"] = ExitReason.EMERGENCY_INTERRUPT.value
+                            interview_active = False
+                            break
+
+                        elif action == "TRIGGER_AMS":
+                            print("[!] 3-Strike Rule Tripped: Altered Mental Status (AMS).")
+                            self.audio.play_template("ams_alert", lang=self.active_language, block=True)
+                            self.case_container["exit_reason"] = ExitReason.AMS_3_STRIKES.value
+                            interview_active = False
+                            break
+
+                        else:
+                            self.audio.speak_dynamic(spoken_resp, lang=self.active_language, block=True)
+                            self.case_container["conversation"].append({"role": "kiosk_agent", "text": spoken_resp})
+
+                        tts_duration = time.time() - t_tts_start
+                        total_turnaround = time.time() - turn_start_time
+
+                        # ⏱️ Real-Time Telemetry Benchmark Printout
+                        print(f"⏱️ [TELEMETRY]: STT: {stt_duration:.2f}s | LLM: {llm_duration:.2f}s | TTS: {tts_duration:.2f}s | Turnaround: {total_turnaround:.2f}s")
+
+                    # If cancelled, bypass heavy SOAP evaluation and reset immediately
+                    if self.case_container.get("exit_reason") == "USER_CANCELLED":
+                        self.current_state = KioskState.DISPATCH_AND_RESET
+                    else:
+                        self.current_state = KioskState.FINALIZING_CASE
+
+                # -------------------------------------------------------------
+                # 5. State: FINALIZING_CASE (Holistic SOAP Synthesis)
+                # -------------------------------------------------------------
+                elif self.current_state == KioskState.FINALIZING_CASE:
+                    raw_exit = self.case_container.get("exit_reason", ExitReason.NORMAL_COMPLETE.value)
+                    exit_str = raw_exit.value if hasattr(raw_exit, "value") else str(raw_exit)
+
+                    print(f"[*] Packaging case [{self.case_container['case_id']}] (Exit: {exit_str})...")
+                    self._update_cumulative_visuals()
+
+                    verdict = self.reasoning.evaluate_final_case(
+                        conversation_history=self.case_container["conversation"],
+                        visual_signs=self.case_container["cumulative_visual_signs"],
+                        skin_status=self.case_container["facial_skin_status"],
+                        exit_reason=raw_exit,
+                        language=self.active_language
+                    )
+                    self.case_container["triage_verdict"] = verdict
+                    print(f"[VERDICT]: ESI Level {verdict.get('esi_level')} ({verdict.get('urgency')})")
+                    self.current_state = KioskState.DISPATCH_AND_RESET
+
+                # -------------------------------------------------------------
+                # 6. State: DISPATCH_AND_RESET (Conveyor Belt Transport)
+                # -------------------------------------------------------------
+                elif self.current_state == KioskState.DISPATCH_AND_RESET:
+                    raw_exit = self.case_container.get("exit_reason", ExitReason.NORMAL_COMPLETE.value)
+                    exit_str = raw_exit.value if hasattr(raw_exit, "value") else str(raw_exit)
+
+                    if exit_str == ExitReason.EMERGENCY_INTERRUPT.value:
+                        self.audio.play_template("emergency_alert", lang=self.active_language, block=True)
+                    elif exit_str == ExitReason.AMS_3_STRIKES.value:
+                        self.audio.play_template("ams_alert", lang=self.active_language, block=True)
+                    elif exit_str not in ["USER_CANCELLED", "HUMAN_NURSE_SUMMONED"]:
+                        self.audio.play_template("wrapup", lang=self.active_language, block=True)
+
+                    # Enqueue to background Conveyor Belt (<1ms)
+                    self.conveyor_belt.enqueue_case(self.case_container)
+                    print("[*] Case finalized. Kiosk returning to PREPARE_STANDBY.\n" + "="*55)
+                    self.current_state = KioskState.PREPARE_STANDBY
+
+                time.sleep(0.05)
+
+            except Exception as e:
+                print(f"[!] FSM Encounter Exception: {e}")
+                time.sleep(1.0)
+
+    def run(self):
+        """Main-Thread GUI Capture Loop (macOS Cocoa Compliant)."""
+        fsm_thread = threading.Thread(target=self._fsm_worker, daemon=True)
+        fsm_thread.start()
+
+        cap = cv2.VideoCapture(SystemConfig.CAMERA_INDEX)
+        cap.set(cv2.CAP_PROP_FRAME_WIDTH, SystemConfig.FRAME_WIDTH)
+        cap.set(cv2.CAP_PROP_FRAME_HEIGHT, SystemConfig.FRAME_HEIGHT)
+
+        print("[*] Camera capture active on Main Thread.")
+
+        try:
+            while self.running:
+                ret, frame = cap.read()
+                if not ret:
+                    time.sleep(0.01)
+                    continue
+
+                telemetry = self.vision.process_frame(frame)
+                with self.telemetry_lock:
+                    self.latest_telemetry = telemetry
+
+                if SystemConfig.SHOW_DUAL_WINDOWS:
+                    cv2.imshow("Kiosk - Clean Patient View", telemetry["clean_view"])
+                    cv2.imshow("Kiosk - Diagnostic Skeleton View", telemetry["skeleton_view"])
+                else:
+                    cv2.imshow("Smart Triage Kiosk", telemetry["clean_view"])
+
+                if cv2.waitKey(1) & 0xFF == ord('q'):
+                    self.running = False
+                    break
+
+        except KeyboardInterrupt:
+            print("\n[!] Powering down systems gracefully...")
+        finally:
+            self.running = False
+            self.conveyor_belt.running = False
+            cap.release()
+            cv2.destroyAllWindows()
+            self.vision.release()
+            self.audio.release()
+            print("[+] Kiosk successfully and safely offline.")
+
+
+if __name__ == "__main__":
+    kiosk = SmartReceptionTriageKiosk()
+    kiosk.run()
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+Not work
+"""
+Main.py - Master Kiosk Orchestrator (Agentic Action Architecture)
+Features:
+- Multi-Key Safe Vision Bridge ("frame", "annotated_frame", presence detection)
+- Proactive Vision-Based Wake-up (No rigid wake word required)
+- Robust Whisper Hallucination Filter
+- Ollama VRAM Keep-Alive Guard & Socket Timeout Protection
+- Crash-Proof FSM Worker Loop
+- Cocoa-Safe Main Thread cv2 GUI
+- Asynchronous Background Outbox Conveyor Belt
+"""
+
+import os
+import cv2
+import time
+import json
+import queue
+import threading
+import traceback
+import requests
+
+from config import SystemConfig, KioskState, ExitReason
+from V_Module import VisionEngine
+from A_Module import AudioEngine
+from R_Module import ReasoningEngine
+
+
+class ConveyorBeltWorker(threading.Thread):
+    """Background Outbox Spooler (The Conveyor Belt)."""
+    def __init__(self, spool_dir: str, endpoint: str):
+        super().__init__(daemon=True)
+        self.spool_dir = spool_dir
+        self.endpoint = endpoint
+        self.queue = queue.Queue()
+        self.running = True
+        os.makedirs(self.spool_dir, exist_ok=True)
+
+    def enqueue_case(self, case_container: dict):
+        case_id = case_container.get("case_id", f"CASE-{int(time.time())}")
+        disk_path = os.path.join(self.spool_dir, f"{case_id}.json")
+
+        try:
+            with open(disk_path, "w", encoding="utf-8") as f:
+                json.dump(case_container, f, ensure_ascii=False, indent=2)
+            print(f"[+] Outbox Spooler: Case {case_id} persisted to disk ({disk_path}).")
+        except Exception as e:
+            print(f"[!] Outbox Spooler File Error: {e}")
+
+        self.queue.put(case_container)
+
+    def run(self):
+        print(f"[*] Conveyor Belt spooler active -> Destination: {self.endpoint}")
+        while self.running:
+            try:
+                case_container = self.queue.get(timeout=2.0)
+            except queue.Empty:
+                continue
+
+            case_id = case_container.get("case_id", "UNKNOWN")
+            delivered = False
+
+            while not delivered and self.running:
+                try:
+                    response = requests.post(self.endpoint, json=case_container, timeout=5.0)
+                    if response.status_code in [200, 201]:
+                        print(f"[+] [DASHBOARD DELIVERED] Successfully synced Case {case_id} to Nurse Dashboard.")
+                        delivered = True
+                        self.queue.task_done()
+                    else:
+                        print(f"[-] [DASHBOARD RETRY] Server status {response.status_code}. Retrying in 10s...")
+                        time.sleep(10.0)
+                except requests.exceptions.RequestException:
+                    print(f"[-] [DASHBOARD OFFLINE] Dashboard unreachable. Retrying Case {case_id} in 10s...")
+                    time.sleep(10.0)
+
+
+class MasterKioskOrchestrator:
+    def __init__(self):
+        print(">> Initializing Stark Industries Smart Reception Triage Kiosk (Agentic Mode)...")
+
+        self.vision = VisionEngine()
+        self.audio = AudioEngine()
+        self.reasoning = ReasoningEngine()
+
+        self.spooler = ConveyorBeltWorker(
+            spool_dir=getattr(SystemConfig, "OUTBOX_DIR", "outbox"),
+            endpoint=getattr(SystemConfig, "NURSE_DASHBOARD_URL", "http://127.0.0.1:8000/api/triage/submit_case")
+        )
+        self.spooler.start()
+
+        self.state = KioskState.PREPARE_STANDBY
+        self.language = "th"
+        self.dialogue_history = []
+        self.patient_turns = []
+        self.last_patient_reply = ""
+        self.case_id = None
+        self.current_esi = 4
+
+        self.running = True
+        self.presence_start_time = None
+        self.last_idle_ping = time.time()
+
+        # Shared Vision Cache between threads
+        self.latest_raw_frame = None
+        self.latest_vision_results = {}
+
+        # Telemetry timers
+        self.telemetry = {
+            "stt_ms": 0.0,
+            "llm_ms": 0.0,
+            "tts_ms": 0.0,
+            "turnaround_ms": 0.0
+        }
+
+        # Start Autonomous Agent in Background Thread
+        self.fsm_thread = threading.Thread(target=self._fsm_worker, daemon=True)
+        self.fsm_thread.start()
+        print("[*] Autonomous Reception Agent is active in background.")
+
+    def run(self):
+        """Main Thread Loop: Dedicated to OpenCV Capture and GUI."""
+        print("[*] Camera capture active on Main Thread.")
+        cap = cv2.VideoCapture(getattr(SystemConfig, "CAMERA_INDEX", 0))
+
+        while self.running:
+            ret, frame = cap.read()
+            if not ret:
+                time.sleep(0.01)
+                continue
+
+            self.latest_raw_frame = frame.copy()
+
+            # Process vision inference
+            vision_results = self.vision.process_frame(frame)
+
+            # Safely handle return types (dict with 'frame', 'annotated_frame', or tuple)
+            if isinstance(vision_results, dict):
+                self.latest_vision_results = vision_results
+                display_frame = vision_results.get("frame", vision_results.get("annotated_frame", frame))
+            elif isinstance(vision_results, tuple):
+                display_frame = vision_results[0]
+                self.latest_vision_results = vision_results[1] if len(vision_results) > 1 and isinstance(vision_results[1], dict) else {}
+            else:
+                display_frame = vision_results if vision_results is not None else frame
+                self.latest_vision_results = {}
+
+            # Overlay Kiosk HUD
+            self._render_hud(display_frame)
+
+            cv2.imshow("Stark Smart Kiosk - Reception HUD", display_frame)
+            key = cv2.waitKey(1) & 0xFF
+            if key == ord('q'):
+                print("[!] Shutdown signal received from GUI.")
+                self.running = False
+                break
+
+        cap.release()
+        cv2.destroyAllWindows()
+        print("[+] Kiosk Core shutdown complete.")
+
+    def _render_hud(self, frame):
+        h, w = frame.shape[:2]
+        cv2.rectangle(frame, (0, 0), (w, 55), (20, 20, 20), -1)
+
+        state_color = (0, 255, 0)
+        if self.state in [KioskState.PREPARE_STANDBY]:
+            state_color = (200, 200, 200)
+        elif self.state in [KioskState.INTERVIEW]:
+            state_color = (255, 200, 0)
+        elif self.state in [KioskState.DISPATCH]:
+            state_color = (0, 140, 255)
+
+        cv2.putText(frame, f"STATE: {self.state}", (20, 35),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.75, state_color, 2)
+        cv2.putText(frame, f"LANG: {self.language.upper()}", (w - 180, 35),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.75, (255, 255, 255), 2)
+
+        # Telemetry Banner
+        telem_str = f"STT: {self.telemetry['stt_ms']:.0f}ms | LLM: {self.telemetry['llm_ms']:.0f}ms | Turn: {self.telemetry['turnaround_ms']:.0f}ms"
+        cv2.putText(frame, telem_str, (20, h - 20),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 255, 255), 1)
+
+    # ==========================================
+    # SAFE VISION BRIDGE HELPERS
+    # ==========================================
+    def _is_patient_in_zone(self) -> bool:
+        """Robust presence check across dictionary keys and class attributes."""
+        # Check dictionary keys from process_frame
+        if isinstance(self.latest_vision_results, dict):
+            for key in ["patient_in_zone", "patient_present", "is_patient_in_zone", "person_detected", "presence"]:
+                if key in self.latest_vision_results:
+                    return bool(self.latest_vision_results[key])
+
+        # Check VisionEngine class attributes
+        for attr in ["patient_in_zone", "patient_present", "is_patient_in_zone", "person_detected"]:
+            if hasattr(self.vision, attr):
+                val = getattr(self.vision, attr)
+                return bool(val() if callable(val) else val)
+
+        # Default to True so kiosk proceeds normally if presence detection is unmapped
+        return True
+
+    def _get_visual_summary(self) -> dict:
+        if hasattr(self.vision, "get_visual_summary"):
+            return self.vision.get_visual_summary()
+        if isinstance(self.latest_vision_results, dict):
+            return self.latest_vision_results.get("visual_signs", self.latest_vision_results.get("signs", {}))
+        return {}
+
+    def _get_dominant_gesture(self) -> str:
+        for attr in ["dominant_current_gesture", "dominant_gesture", "current_gesture"]:
+            if hasattr(self.vision, attr):
+                return getattr(self.vision, attr)
+        if isinstance(self.latest_vision_results, dict):
+            return self.latest_vision_results.get("dominant_gesture", "NONE")
+        return "NONE"
+
+    def _reset_vision_tracking(self):
+        if hasattr(self.vision, "reset_tracking"):
+            self.vision.reset_tracking()
+        elif hasattr(self.vision, "reset"):
+            self.vision.reset()
+
+    # ==========================================
+    # BACKGROUND FSM WORKER
+    # ==========================================
+    def _fsm_worker(self):
+        """Crash-Proof Background FSM Worker."""
+        while self.running:
+            try:
+                self._fsm_step()
+            except Exception as e:
+                print(f"[!] FSM Worker Exception in state {self.state}: {e}")
+                traceback.print_exc()
+                time.sleep(1.0)
+
+    def _fsm_step(self):
+        # Keep-Alive Ping for Ollama every 4 minutes to prevent VRAM unloading
+        if time.time() - self.last_idle_ping > 240.0:
+            self._ping_ollama_keepalive()
+            self.last_idle_ping = time.time()
+
+        # ==========================================
+        # STATE 1: PREPARE_STANDBY
+        # ==========================================
+        if self.state == KioskState.PREPARE_STANDBY:
+            patient_present = self._is_patient_in_zone()
+
+            if not patient_present:
+                self.presence_start_time = None
+                time.sleep(0.2)
+                return
+
+            if self.presence_start_time is None:
+                self.presence_start_time = time.time()
+
+            presence_duration = time.time() - self.presence_start_time
+
+            # Automatic Vision Wake-Up: Patient stands in zone for >= 1.0 second
+            if presence_duration >= 1.0:
+                print(f"[+] Patient presence confirmed ({presence_duration:.1f}s). Proactively waking kiosk...")
+                self._initialize_case()
+                self.state = KioskState.GREETING
+                return
+
+            # Audio Wake-Up (Listens quickly in parallel)
+            print("[*] Standby: Checking for presence or speech...")
+            speech_text = self.audio.listen_and_transcribe(
+                prompt="สวัสดี Hello Hi ช่วยด้วย ปวด เจ็บ",
+                language="auto",
+                phrase_time_limit=3.0
+            )
+
+            # Filter Whisper silence hallucinations
+            if speech_text and speech_text.strip().lower() not in ["okay.", "okay", "thank you.", "thank you"]:
+                print(f"[+] Speech wake trigger: '{speech_text}'")
+                self._detect_initial_language(speech_text)
+                self._initialize_case()
+                self.state = KioskState.GREETING
+
+        # ==========================================
+        # STATE 2: GREETING
+        # ==========================================
+        elif self.state == KioskState.GREETING:
+            print(f"[*] State: GREETING (Language: {self.language})")
+            if self.language == "th":
+                self.audio.play_template(getattr(SystemConfig.TEMPLATES, "GREETING_TH", "assets/audio/greeting_th.mp3"))
+            else:
+                self.audio.play_template(getattr(SystemConfig.TEMPLATES, "GREETING_EN", "assets/audio/greeting_en.mp3"))
+
+            time.sleep(0.5)
+            self.state = KioskState.PDPA
+
+        # ==========================================
+        # STATE 3: PDPA
+        # ==========================================
+        elif self.state == KioskState.PDPA:
+            print(f"[*] State: PDPA Consent (Language: {self.language})")
+            if self.language == "th":
+                self.audio.play_template(getattr(SystemConfig.TEMPLATES, "PDPA_TH", "assets/audio/pdpa_th.mp3"))
+            else:
+                self.audio.play_template(getattr(SystemConfig.TEMPLATES, "PDPA_EN", "assets/audio/pdpa_en.mp3"))
+
+            time.sleep(0.3)
+            self.state = KioskState.INTERVIEW
+
+        # ==========================================
+        # STATE 4: INTERVIEW (Agentic Action Loop)
+        # ==========================================
+        elif self.state == KioskState.INTERVIEW:
+            turn_start = time.time()
+
+            # 1. Check for proactive visual inquiry on Turn 1 if patient is clutching a body part
+            if len(self.patient_turns) == 0:
+                visual_prompt = self.reasoning.get_proactive_visual_prompt(
+                    dominant_gesture=self._get_dominant_gesture(),
+                    language=self.language
+                )
+                if visual_prompt:
+                    print(f"[*] Triggering Proactive Visual Inquiry: '{visual_prompt}'")
+                    self.dialogue_history.append({"speaker": "nurse", "text": visual_prompt})
+                    self.audio.speak(visual_prompt, lang=self.language)
+
+            # 2. Listen to patient
+            stt_start = time.time()
+            prompt_hints = "ปวด เจ็บ ข้อเท้า หัวใจ หายใจ แน่นหน้าอก สะดุด ล้ม" if self.language == "th" else "pain chest ankle fall hurt"
+            patient_speech = self.audio.listen_and_transcribe(
+                prompt=prompt_hints,
+                language=self.language,
+                phrase_time_limit=8.0
+            )
+            self.telemetry["stt_ms"] = (time.time() - stt_start) * 1000
+
+            if not patient_speech:
+                print("[-] Patient was silent. Re-prompting gently...")
+                silent_reprompt = "ดิฉันยังไม่ได้ยินเสียง แจ้งอาการได้เลยนะคะ" if self.language == "th" else "I didn't quite hear you. Please describe your symptoms."
+                self.audio.speak(silent_reprompt, lang=self.language)
+                return
+
+            self.patient_turns.append(patient_speech)
+            self.dialogue_history.append({"speaker": "patient", "text": patient_speech})
+            self.last_patient_reply = patient_speech
+
+            # 3. Check stopping phrase or acute cardiac preemption
+            if self.reasoning.is_stopping_phrase(patient_speech, self.language):
+                print("[!] Patient issued stop phrase. Proceeding to finalize...")
+                self.state = KioskState.FINALIZING
+                return
+
+            preempt_esi = self.reasoning.check_acute_preemption(patient_speech, self._get_visual_summary())
+            if preempt_esi:
+                print(f"[!] ACUTE PREEMPTION TRIGGERED -> ESI {preempt_esi}")
+                self.current_esi = preempt_esi
+                emergency_msg = "ระบบตรวจพบอาการฉุกเฉิน พยาบาลกำลังมาพบท่านทันทีค่ะ" if self.language == "th" else "Emergency signs detected. A triage nurse is arriving immediately."
+                self.audio.speak(emergency_msg, lang=self.language)
+                self.state = KioskState.FINALIZING
+                return
+
+            # 4. Dispatch Agent Action via Reasoning Engine
+            llm_start = time.time()
+            action_data = self.reasoning.determine_action(
+                patient_speech=patient_speech,
+                dialogue_history=self.dialogue_history,
+                visual_signs=self._get_visual_summary(),
+                dominant_gesture=self._get_dominant_gesture(),
+                language=self.language
+            )
+            self.telemetry["llm_ms"] = (time.time() - llm_start) * 1000
+
+            action = action_data.get("action", "CONTINUE_TRIAGE")
+            spoken_response = action_data.get("spoken_response", "")
+
+            # Execute Agent Actions
+            if action == "SWITCH_LANGUAGE":
+                new_lang = action_data.get("target_language", "en")
+                print(f"[*] Agent Action: SWITCH_LANGUAGE -> {new_lang.upper()}")
+                self.language = new_lang
+                if spoken_response:
+                    self.audio.speak(spoken_response, lang=self.language)
+
+            elif action in ["TRIAGE_COMPLETE", "CALL_HUMAN_NURSE", "EMERGENCY_ABORT"]:
+                print(f"[*] Agent Action: {action} -> Finalizing Case...")
+                if spoken_response:
+                    self.audio.speak(spoken_response, lang=self.language)
+                self.state = KioskState.FINALIZING
+
+            elif action == "CANCEL_AND_EXIT":
+                print("[*] Agent Action: CANCEL_AND_EXIT")
+                if spoken_response:
+                    self.audio.speak(spoken_response, lang=self.language)
+                self._reset_kiosk()
+
+            else:  # CONTINUE_TRIAGE
+                if spoken_response:
+                    self.dialogue_history.append({"speaker": "nurse", "text": spoken_response})
+                    tts_start = time.time()
+                    self.audio.speak(spoken_response, lang=self.language)
+                    self.telemetry["tts_ms"] = (time.time() - tts_start) * 1000
+
+            self.telemetry["turnaround_ms"] = (time.time() - turn_start) * 1000
+
+        # ==========================================
+        # STATE 5: FINALIZING (SOAP Synthesis)
+        # ==========================================
+        elif self.state == KioskState.FINALIZING:
+            print("[*] State: FINALIZING -> Synthesizing Clinical SOAP Record...")
+
+            # Capture local clean JPG snapshot
+            evidence_path = self._save_evidence_snapshot()
+
+            soap_data = self.reasoning.generate_soap_note(
+                dialogue_history=self.dialogue_history,
+                visual_signs=self._get_visual_summary(),
+                language=self.language
+            )
+
+            case_container = {
+                "case_id": self.case_id,
+                "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
+                "language": self.language,
+                "esi_level": soap_data.get("esi_level", self.current_esi),
+                "soap_note": soap_data.get("soap_note", {}),
+                "visual_evidence": {
+                    "local_jpeg_path": evidence_path,
+                    "dominant_gesture": self._get_dominant_gesture(),
+                    "visual_signs": self._get_visual_summary()
+                },
+                "dialogue_transcript": self.dialogue_history
+            }
+
+            self.spooler.enqueue_case(case_container)
+            self.state = KioskState.DISPATCH
+
+        # ==========================================
+        # STATE 6: DISPATCH
+        # ==========================================
+        elif self.state == KioskState.DISPATCH:
+            print(f"[*] State: DISPATCH -> Presenting summary for Case {self.case_id}...")
+            farewell = "คัดกรองเสร็จสิ้นแล้วค่ะ กรุณานำเอกสารไปติดต่อที่เคาน์เตอร์พยาบาลนะคะ" if self.language == "th" else "Triage intake complete. Please proceed to the nurse station."
+            self.audio.speak(farewell, lang=self.language)
+            time.sleep(3.0)
+            self._reset_kiosk()
+
+    def _initialize_case(self):
+        self.case_id = f"CASE-{int(time.time())}"
+        self.dialogue_history = []
+        self.patient_turns = []
+        self.current_esi = 4
+        print(f"[+] Initialized {self.case_id}")
+
+    def _reset_kiosk(self):
+        print("[*] Resetting Kiosk back to PREPARE_STANDBY...")
+        self.state = KioskState.PREPARE_STANDBY
+        self.language = "th"
+        self.presence_start_time = None
+        self._reset_vision_tracking()
+
+    def _detect_initial_language(self, text: str):
+        if any(char in text for char in 'กขฃคฅฆงจฉชซฌญฎฏฐฑฒณดตถทธนบปผฝพฟภมยรลวศษสหฬอฮ'):
+            self.language = "th"
+        else:
+            self.language = "en"
+
+    def _save_evidence_snapshot(self) -> str:
+        evidence_dir = getattr(SystemConfig, "EVIDENCE_DIR", "evidence")
+        os.makedirs(evidence_dir, exist_ok=True)
+        filename = f"{self.case_id}.jpg"
+        filepath = os.path.join(evidence_dir, filename)
+
+        if self.latest_raw_frame is not None:
+            cv2.imwrite(filepath, self.latest_raw_frame)
+            print(f"[+] High-resolution JPEG snapshot saved: {filepath}")
+        return filepath
+
+    def _ping_ollama_keepalive(self):
+        try:
+            requests.post(
+                f"{self.reasoning.base_url}/api/generate",
+                json={"model": self.reasoning.model_name, "prompt": "ping", "keep_alive": -1},
+                timeout=3.0
+            )
+            print("[+] Ollama VRAM keep-alive ping dispatched.")
+        except Exception:
+            pass
+
+
+if __name__ == "__main__":
+    kiosk = MasterKioskOrchestrator()
+    kiosk.run()
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+"""
+Main.py - Master Kiosk Orchestrator (macOS Cocoa Main-Thread Compliant)
+Consolidated Architecture:
+- User-Initiated Voice Wake-Up with Zero Silent False Starts
+- Dynamic language="auto" Negotiation (Eliminates Thai phonetic hallucination)
+- Native KioskState Enums & AudioEngine APIs
+- Multi-Window Vision Pipeline (clean_view + skeleton_view)
+- Non-Blocking Ollama Warmup Heartbeat
+- Preemption & Agentic Action Dispatching with Telemetry
+"""
+
+import os
+import cv2
+import time
+import json
+import queue
+import threading
+import requests
+
+from config import SystemConfig, KioskState, ExitReason
+from V_Module import VisionEngine
+from A_Module import AudioEngine
+from R_Module import ReasoningEngine
+
+
+class ConveyorBeltWorker(threading.Thread):
+    """Background Outbox Spooler (The Conveyor Belt)."""
+    def __init__(self, spool_dir: str, endpoint: str):
+        super().__init__(daemon=True)
+        self.spool_dir = spool_dir
+        self.endpoint = endpoint
+        self.queue = queue.Queue()
+        self.running = True
+        os.makedirs(self.spool_dir, exist_ok=True)
+
+    def enqueue_case(self, case_container: dict):
+        case_id = case_container.get("case_id", f"CASE-{int(time.time())}")
+        disk_path = os.path.join(self.spool_dir, f"{case_id}.json")
+
+        try:
+            with open(disk_path, "w", encoding="utf-8") as f:
+                json.dump(case_container, f, ensure_ascii=False, indent=2)
+        except Exception as e:
+            print(f"[!] Warning: Failed to spool case to local disk: {e}")
+
+        self.queue.put((case_id, disk_path, case_container))
+        print(f"[+] [Conveyor Belt]: Case {case_id} queued for background transmission.")
+
+    def run(self):
+        while self.running:
+            try:
+                case_id, disk_path, payload = self.queue.get(timeout=1.0)
+            except queue.Empty:
+                continue
+
+            transmitted = False
+            while not transmitted and self.running:
+                try:
+                    res = requests.post(
+                        self.endpoint,
+                        json=payload,
+                        timeout=getattr(SystemConfig, "HTTP_TIMEOUT", 5.0)
+                    )
+                    if res.status_code in [200, 201]:
+                        print(f"[✓] [Conveyor Belt]: Case {case_id} delivered to Nurse Dashboard.")
+                        transmitted = True
+                        if os.path.exists(disk_path):
+                            os.remove(disk_path)
+                    else:
+                        retry_int = getattr(SystemConfig, "CONVEYOR_RETRY_INTERVAL", 10.0)
+                        print(f"[!] [Conveyor Belt]: Dashboard status {res.status_code}. Retrying in {retry_int}s...")
+                        time.sleep(retry_int)
+                except requests.exceptions.RequestException:
+                    retry_int = getattr(SystemConfig, "CONVEYOR_RETRY_INTERVAL", 10.0)
+                    print(f"[-] [Conveyor Belt]: Dashboard unreachable. Retrying in {retry_int}s...")
+                    time.sleep(retry_int)
+
+            self.queue.task_done()
+
+
+class SmartReceptionTriageKiosk:
+    def __init__(self):
+        print(">> Initializing Stark Industries Smart Reception Triage Kiosk (Agentic Mode)...")
+        self.vision = VisionEngine()
+        self.audio = AudioEngine()
+        self.reasoning = ReasoningEngine()
+
+        self.last_heartbeat = time.time()
+
+        # Arm the Conveyor Belt Outbox Worker
+        self.conveyor_belt = ConveyorBeltWorker(
+            spool_dir=getattr(SystemConfig, "OUTBOX_SPOOL_DIR", "outbox"),
+            endpoint=getattr(SystemConfig, "NURSE_DASHBOARD_ENDPOINT", "http://127.0.0.1:8000/api/triage/submit_case")
+        )
+        self.conveyor_belt.start()
+
+        # Evidence folder setup
+        self.evidence_dir = getattr(SystemConfig, "EVIDENCE_DIR", os.path.join(SystemConfig.BASE_DIR, "evidence"))
+        os.makedirs(self.evidence_dir, exist_ok=True)
+
+        self.current_state = KioskState.PREPARE_STANDBY
+        self.active_language = "th"
+        self.running = True
+        self.current_strikes = 0
+
+        self.latest_telemetry = {}
+        self.telemetry_lock = threading.Lock()
+
+        self.case_container = {}
+        self._reset_case_container()
+
+    def _reset_case_container(self):
+        """Initializes a fresh clinical case container."""
+        self.current_strikes = 0
+        self.case_container = {
+            "case_id": f"CASE-{int(time.time())}",
+            "start_time": time.strftime("%Y-%m-%d %H:%M:%S"),
+            "language": self.active_language,
+            "pdpa_consented": False,
+            "exit_reason": None,
+            "conversation": [],
+            "cumulative_visual_signs": {
+                "chest_clutching": False,
+                "abdominal_clutching": False,
+                "head_clutching": False
+            },
+            "facial_skin_status": "NORMAL",
+            "visual_evidence_path": None,
+            "triage_verdict": None
+        }
+
+    def _update_cumulative_visuals(self):
+        """Updates sustained gestures and captures clean JPEG evidence without Base64 clutter."""
+        with self.telemetry_lock:
+            t = self.latest_telemetry
+
+            # Use sustained gestures (>=3.0s) to eliminate passing-hand false positives
+            sustained = t.get("sustained_gestures", {})
+            for key in ["chest_clutching", "abdominal_clutching", "head_clutching"]:
+                if sustained.get(key, False):
+                    self.case_container["cumulative_visual_signs"][key] = True
+
+            self.case_container["facial_skin_status"] = t.get("skin_status", "NORMAL")
+
+            # Save clean JPEG to disk
+            if "clean_view" in t and self.case_container["visual_evidence_path"] is None:
+                img_path = os.path.join(self.evidence_dir, f"{self.case_container['case_id']}.jpg")
+                cv2.imwrite(img_path, t["clean_view"])
+                self.case_container["visual_evidence_path"] = img_path
+                print(f"[i] Captured JPEG Evidence: {img_path}")
+
+    def _safe_warmup(self):
+        """Non-blocking Ollama heartbeat so long standby idle never causes VRAM eviction."""
+        try:
+            if hasattr(self.reasoning, "warmup"):
+                self.reasoning.warmup()
+            self.last_heartbeat = time.time()
+        except Exception as e:
+            print(f"[!] Warmup ping skipped: {e}")
+
+    def _fsm_worker(self):
+        """Background Agentic FSM Worker with Turn-by-Turn Telemetry Timers."""
+        time.sleep(1.0)
+        print("[*] Autonomous Reception Agent is active in background.")
+
+        while self.running:
+            try:
+                # # -------------------------------------------------------------
+                # # 1. State: PREPARE_STANDBY (Waits for User Speech)
+                # # -------------------------------------------------------------
+                # if self.current_state == KioskState.PREPARE_STANDBY:
+                #     if (time.time() - self.last_heartbeat) >= 240.0:
+                #         self._safe_warmup()
+
+                #     with self.telemetry_lock:
+                #         patient_in_zone = self.latest_telemetry.get("patient_present", False)
+
+                #     if not patient_in_zone:
+                #         time.sleep(0.1)
+                #         continue
+
+                #     # Patient is in zone -> Listen with language="auto" so user speech dictates language
+                #     print("[*] Patient in triage zone. Listening for speech or wake word...")
+                #     ambient_speech = self.audio.listen(language="auto")
+
+                #     # Filter silence hallucinations
+                #     hallucinations = [
+                #         "okay.", "okay", "thank you.", "thank you", "bye.", "bye",
+                #         "ขอบคุณมาก", "ขอบคุณมาก ขอบคุณมาก", "ขอบคุณสำหรับการรับชม"
+                #     ]
+                #     clean_speech = ambient_speech.strip().lower()
+
+                #     if len(clean_speech) > 0 and clean_speech not in [h.lower() for h in hallucinations]:
+                #         # Language Identification
+                #         has_thai = any('\u0e00' <= c <= '\u0e7f' for c in ambient_speech)
+                #         has_english = any(c.isascii() and c.isalpha() for c in ambient_speech)
+
+                #         english_triggers = ["hello", "hi", "help", "pain", "english", "doctor", "please", "sick"]
+                #         if any(w in clean_speech for w in english_triggers) or (has_english and not has_thai):
+                #             self.active_language = "en"
+                #         else:
+                #             self.active_language = "th"
+
+                #         print(f"[+] Patient engagement confirmed: '{ambient_speech}' -> Language: {self.active_language.upper()}")
+                #         self._reset_case_container()
+                #         self.case_container["language"] = self.active_language
+                #         self.current_state = KioskState.GREETING_LANG_SELECT
+
+                # -------------------------------------------------------------
+                # 1. State: PREPARE_STANDBY (Waits Strictly for Greeting / Initiation)
+                # -------------------------------------------------------------
+                if self.current_state == KioskState.PREPARE_STANDBY:
+                    if (time.time() - self.last_heartbeat) >= 240.0:
+                        self._safe_warmup()
+
+                    with self.telemetry_lock:
+                        patient_in_zone = self.latest_telemetry.get("patient_present", False)
+
+                    if not patient_in_zone:
+                        time.sleep(0.1)
+                        continue
+
+                    # Patient is in zone -> Listen for formal conversation initiation
+                    print("[*] Patient in triage zone. Waiting for greeting (สวัสดี / Hello)...")
+                    ambient_speech = self.audio.listen(language="auto")
+
+                    # Filter silence hallucinations
+                    hallucinations = [
+                        "okay.", "okay", "thank you.", "thank you", "bye.", "bye",
+                        "ขอบคุณมาก", "ขอบคุณมาก ขอบคุณมาก", "ขอบคุณสำหรับการรับชม"
+                    ]
+                    clean_speech = ambient_speech.strip().lower()
+
+                    if len(clean_speech) > 0 and clean_speech not in [h.lower() for h in hallucinations]:
+                        # Strict Conversation Initiators ONLY (No medical symptoms)
+                        thai_greetings = ["สวัสดี", "ฮัลโหล", "ช่วยด้วย", "ขอโทษครับ", "ขอโทษค่ะ"]
+                        english_greetings = ["hello", "hi", "hey", "excuse me", "help", "good morning", "good afternoon"]
+
+                        is_thai_greeting = any(w in clean_speech for w in thai_greetings)
+                        is_english_greeting = any(w in clean_speech for w in english_greetings)
+
+                        # Trigger intake ONLY if an initiation/greeting phrase was detected
+                        if is_english_greeting:
+                            self.active_language = "en"
+                        elif is_thai_greeting:
+                            self.active_language = "th"
+                        else:
+                            # Ignored non-greeting speech (e.g. "เจ็บข้อเท้า" or background chatter)
+                            print(f"[-] Ignored non-greeting speech in standby: '{ambient_speech}'")
+                            continue
+
+                        print(f"[+] Patient greeting detected: '{ambient_speech}' -> Language: {self.active_language.upper()}")
+                        self._reset_case_container()
+                        self.case_container["language"] = self.active_language
+                        self.current_state = KioskState.GREETING_LANG_SELECT
+
+                # -------------------------------------------------------------
+                # 2. State: GREETING_LANG_SELECT
+                # -------------------------------------------------------------
+                elif self.current_state == KioskState.GREETING_LANG_SELECT:
+                    print(f"[*] State: GREETING_LANG_SELECT (Default: {self.active_language.upper()})")
+                    self.audio.play_template("greeting", lang=self.active_language, block=True)
+
+                    # CRITICAL: Must use language="auto" so English responses like "switch to english" are not forced into Thai!
+                    lang_reply = self.audio.listen(language="auto")
+                    print(f"[Language Preference]: \"{lang_reply}\"")
+
+                    reply_clean = lang_reply.lower().strip()
+                    english_cues = ["english", "eng", "hello", "hi", "switch", "change", "please", "can you speak english"]
+                    thai_cues = ["ไทย", "ภาษาไทย", "พูดไทย", "ครับ", "ค่ะ"]
+
+                    if any(w in reply_clean for w in english_cues):
+                        print("[!] User requested English. Switching active language to EN...")
+                        self.active_language = "en"
+                    elif any(w in reply_clean for w in thai_cues):
+                        self.active_language = "th"
+                    elif any(c.isascii() and c.isalpha() for c in reply_clean) and not any('\u0e00' <= c <= '\u0e7f' for c in lang_reply):
+                        self.active_language = "en"
+
+                    self.case_container["language"] = self.active_language
+                    self.current_state = KioskState.PDPA_CONSENT
+
+                # -------------------------------------------------------------
+                # 3. State: PDPA_CONSENT
+                # -------------------------------------------------------------
+                elif self.current_state == KioskState.PDPA_CONSENT:
+                    print(f"[*] State: PDPA_CONSENT (Language: {self.active_language.upper()})")
+                    self.audio.play_template("pdpa_notice", lang=self.active_language, block=True)
+                    consent_reply = self.audio.listen(language=self.active_language)
+                    self.case_container["conversation"].append({"role": "pdpa_response", "text": consent_reply})
+
+                    # Check for refusal
+                    deny_tokens = ["ไม่", "ปฏิเสธ", "no", "deny", "disagree", "not consent"]
+                    if any(t in consent_reply.lower() for t in deny_tokens):
+                        print("[-] Patient refused PDPA consent. Transitioning to MANUAL_ROUTING...")
+                        self.case_container["exit_reason"] = ExitReason.PDPA_DENIED.value
+                        self.current_state = KioskState.MANUAL_ROUTING
+                    else:
+                        self.case_container["pdpa_consented"] = True
+                        self.current_state = KioskState.SYMPTOM_INTERVIEW
+
+                # -------------------------------------------------------------
+                # 3b. State: MANUAL_ROUTING
+                # -------------------------------------------------------------
+                elif self.current_state == KioskState.MANUAL_ROUTING:
+                    self.audio.play_template("pdpa_denied", lang=self.active_language, block=True)
+                    time.sleep(2.0)
+                    print("[*] Patient routed to human desk. Resetting to PREPARE_STANDBY.\n" + "="*55)
+                    self.current_state = KioskState.PREPARE_STANDBY
+
+                # -------------------------------------------------------------
+                # 4. State: SYMPTOM_INTERVIEW (Agentic Action Loop + Timers)
+                # -------------------------------------------------------------
+                elif self.current_state == KioskState.SYMPTOM_INTERVIEW:
+                    with self.telemetry_lock:
+                        dom_gesture = self.latest_telemetry.get("dominant_current_gesture", "NONE")
+
+                    proactive_prompt = self.reasoning.get_proactive_visual_prompt(dom_gesture, lang=self.active_language)
+
+                    if proactive_prompt:
+                        print(f"[*] [Proactive Visual Cue]: Triggering inquiry for {dom_gesture}")
+                        self.audio.speak_dynamic(proactive_prompt, lang=self.active_language, block=True)
+                        self.case_container["conversation"].append({"role": "kiosk_proactive", "text": proactive_prompt})
+                    else:
+                        self.audio.play_template("inquiry", lang=self.active_language, block=True)
+
+                    interview_active = True
+                    consecutive_pauses = 0
+
+                    while interview_active and self.running:
+                        turn_start_time = time.time()
+
+                        # 1. Capture speech (STT)
+                        t_stt_start = time.time()
+                        chunk = self.audio.listen(language=self.active_language)
+                        stt_duration = time.time() - t_stt_start
+
+                        self._update_cumulative_visuals()
+
+                        # Silence Handling
+                        if len(chunk) == 0:
+                            consecutive_pauses += 1
+                            if consecutive_pauses == 1:
+                                self.audio.play_template("still_listening", lang=self.active_language, block=True)
+                                continue
+                            elif consecutive_pauses == 2:
+                                self.audio.play_template("anything_else", lang=self.active_language, block=True)
+                                continue
+                            else:
+                                print("[*] Extended silence verified. Finalizing encounter.")
+                                self.case_container["exit_reason"] = ExitReason.NORMAL_COMPLETE.value
+                                interview_active = False
+                                break
+
+                        consecutive_pauses = 0
+                        self.case_container["conversation"].append({"role": "patient", "text": chunk})
+
+                        # Emergency Preemption Check (Levine's sign, crushing chest pain)
+                        is_preempted, preempt_esi = self.reasoning.check_acute_preemption(
+                            chunk,
+                            self.case_container["cumulative_visual_signs"]
+                        )
+                        if is_preempted:
+                            print(f"[!] ACUTE EMERGENCY PREEMPTION: ESI Level {preempt_esi}!")
+                            self.case_container["exit_reason"] = ExitReason.EMERGENCY_INTERRUPT.value
+                            interview_active = False
+                            break
+
+                        # Stopping Intent Check ("แค่นี้ครับ" / "หมดแล้ว")
+                        if self.reasoning.is_stopping_phrase(chunk, lang=self.active_language):
+                            print("[*] Patient explicitly requested completion.")
+                            self.case_container["exit_reason"] = ExitReason.NORMAL_COMPLETE.value
+                            interview_active = False
+                            break
+
+                        # 2. Agent Decision (LLM Reasoning)
+                        with self.telemetry_lock:
+                            v_telemetry = self.latest_telemetry
+
+                        action_frame = self.reasoning.dispatch_agent_turn(
+                            utterance=chunk,
+                            history=self.case_container["conversation"],
+                            visual_telemetry=v_telemetry,
+                            current_strikes=self.current_strikes,
+                            active_lang=self.active_language
+                        )
+
+                        action = action_frame.get("action", "CONTINUE_TRIAGE")
+                        spoken_resp = action_frame.get("spoken_response", "")
+                        llm_duration = action_frame.get("llm_latency_sec", 0.0)
+                        self.current_strikes = action_frame.get("strikes", self.current_strikes)
+
+                        print(f"[*] [Agent Decision]: Action={action} | Spoken=\"{spoken_resp}\"")
+
+                        # 3. Audio Playback (TTS)
+                        t_tts_start = time.time()
+
+                        # ACTION: TRIAGE COMPLETE (Onset + Severity gathered -> Confirm before closing)
+                        if action == "TRIAGE_COMPLETE":
+                            print("[✓] Clinical core gathered. Re-checking for additional symptoms...")
+                            reask_text = (
+                                "รับทราบอาการเบื้องต้นแล้วค่ะ มีอาการผิดปกติอย่างอื่นเพิ่มเติมอีกไหมคะ"
+                                if self.active_language == "th"
+                                else "Understood. Are you experiencing any other symptoms?"
+                            )
+                            self.audio.speak_dynamic(reask_text, lang=self.active_language, block=True)
+                            self.case_container["conversation"].append({"role": "kiosk_agent", "text": reask_text})
+
+                            final_reply = self.audio.listen(language=self.active_language)
+
+                            if len(final_reply) > 0 and not self.reasoning.is_stopping_phrase(final_reply, lang=self.active_language):
+                                print(f"[+] Patient provided supplementary info: '{final_reply}'")
+                                self.case_container["conversation"].append({"role": "patient", "text": final_reply})
+
+                            self.case_container["exit_reason"] = ExitReason.NORMAL_COMPLETE.value
+                            interview_active = False
+                            break
+
+                        # ACTION: Cancel and Exit
+                        elif action == "CANCEL_AND_EXIT":
+                            print("[!] AGENT COMMAND: Patient requested early cancellation.")
+                            self.audio.speak_dynamic(spoken_resp, lang=self.active_language, block=True)
+                            self.case_container["exit_reason"] = "USER_CANCELLED"
+                            interview_active = False
+                            break
+
+                        elif action == "SWITCH_LANGUAGE":
+                            new_lang = action_frame.get("target_language", "en")
+                            print(f"[!] AGENT COMMAND: Dynamically switching language from {self.active_language} -> {new_lang}")
+                            self.active_language = new_lang
+                            self.case_container["language"] = self.active_language
+                            self.audio.speak_dynamic(spoken_resp, lang=self.active_language, block=True)
+                            self.case_container["conversation"].append({"role": "kiosk_action", "text": spoken_resp})
+
+                        elif action == "CALL_HUMAN_NURSE":
+                            print("[!] AGENT COMMAND: Summoning human triage staff.")
+                            self.audio.speak_dynamic(spoken_resp, lang=self.active_language, block=True)
+                            self.case_container["exit_reason"] = "HUMAN_NURSE_SUMMONED"
+                            interview_active = False
+                            break
+
+                        elif action == "EMERGENCY_ABORT":
+                            print("[!] AGENT COMMAND: High-Acuity Emergency Abort triggered!")
+                            self.audio.speak_dynamic(spoken_resp, lang=self.active_language, block=True)
+                            self.case_container["exit_reason"] = ExitReason.EMERGENCY_INTERRUPT.value
+                            interview_active = False
+                            break
+
+                        elif action == "TRIGGER_AMS":
+                            print("[!] 3-Strike Rule Tripped: Altered Mental Status (AMS).")
+                            self.audio.play_template("ams_alert", lang=self.active_language, block=True)
+                            self.case_container["exit_reason"] = ExitReason.AMS_3_STRIKES.value
+                            interview_active = False
+                            break
+
+                        else:  # CONTINUE_TRIAGE
+                            self.audio.speak_dynamic(spoken_resp, lang=self.active_language, block=True)
+                            self.case_container["conversation"].append({"role": "kiosk_agent", "text": spoken_resp})
+
+                        tts_duration = time.time() - t_tts_start
+                        total_turnaround = time.time() - turn_start_time
+
+                        # Real-Time Telemetry Benchmark
+                        print(f"⏱️ [TELEMETRY]: STT: {stt_duration:.2f}s | LLM: {llm_duration:.2f}s | TTS: {tts_duration:.2f}s | Turnaround: {total_turnaround:.2f}s")
+
+                    # Next state transition
+                    if self.case_container.get("exit_reason") == "USER_CANCELLED":
+                        self.current_state = KioskState.DISPATCH_AND_RESET
+                    else:
+                        self.current_state = KioskState.FINALIZING_CASE
+
+                # -------------------------------------------------------------
+                # 5. State: FINALIZING_CASE (Holistic SOAP Synthesis)
+                # -------------------------------------------------------------
+                elif self.current_state == KioskState.FINALIZING_CASE:
+                    raw_exit = self.case_container.get("exit_reason", ExitReason.NORMAL_COMPLETE.value)
+                    exit_str = raw_exit.value if hasattr(raw_exit, "value") else str(raw_exit)
+
+                    print(f"[*] Packaging case [{self.case_container['case_id']}] (Exit: {exit_str})...")
+                    self._update_cumulative_visuals()
+
+                    verdict = self.reasoning.evaluate_final_case(
+                        conversation_history=self.case_container["conversation"],
+                        visual_signs=self.case_container["cumulative_visual_signs"],
+                        skin_status=self.case_container["facial_skin_status"],
+                        exit_reason=raw_exit,
+                        language=self.active_language
+                    )
+                    self.case_container["triage_verdict"] = verdict
+                    print(f"[VERDICT]: ESI Level {verdict.get('esi_level')} ({verdict.get('urgency')})")
+                    self.current_state = KioskState.DISPATCH_AND_RESET
+
+                # -------------------------------------------------------------
+                # 6. State: DISPATCH_AND_RESET (Conveyor Belt Transport)
+                # -------------------------------------------------------------
+                elif self.current_state == KioskState.DISPATCH_AND_RESET:
+                    raw_exit = self.case_container.get("exit_reason", ExitReason.NORMAL_COMPLETE.value)
+                    exit_str = raw_exit.value if hasattr(raw_exit, "value") else str(raw_exit)
+
+                    if exit_str == ExitReason.EMERGENCY_INTERRUPT.value:
+                        self.audio.play_template("emergency_alert", lang=self.active_language, block=True)
+                    elif exit_str == ExitReason.AMS_3_STRIKES.value:
+                        self.audio.play_template("ams_alert", lang=self.active_language, block=True)
+                    elif exit_str not in ["USER_CANCELLED", "HUMAN_NURSE_SUMMONED"]:
+                        self.audio.play_template("wrapup", lang=self.active_language, block=True)
+
+                    # Enqueue to background Conveyor Belt (<1ms)
+                    self.conveyor_belt.enqueue_case(self.case_container)
+                    print("[*] Case finalized. Kiosk returning to PREPARE_STANDBY.\n" + "="*55)
+                    self.current_state = KioskState.PREPARE_STANDBY
+
+                time.sleep(0.05)
+
+            except Exception as e:
+                print(f"[!] FSM Encounter Exception: {e}")
+                time.sleep(1.0)
+
+    def run(self):
+        """Main-Thread GUI Capture Loop (macOS Cocoa Compliant)."""
+        fsm_thread = threading.Thread(target=self._fsm_worker, daemon=True)
+        fsm_thread.start()
+
+        cap = cv2.VideoCapture(getattr(SystemConfig, "CAMERA_INDEX", 0))
+        cap.set(cv2.CAP_PROP_FRAME_WIDTH, getattr(SystemConfig, "FRAME_WIDTH", 640))
+        cap.set(cv2.CAP_PROP_FRAME_HEIGHT, getattr(SystemConfig, "FRAME_HEIGHT", 480))
+
+        print("[*] Camera capture active on Main Thread.")
+
+        try:
+            while self.running:
+                ret, frame = cap.read()
+                if not ret:
+                    time.sleep(0.01)
+                    continue
+
+                telemetry = self.vision.process_frame(frame)
+                with self.telemetry_lock:
+                    self.latest_telemetry = telemetry
+
+                show_dual = getattr(SystemConfig, "SHOW_DUAL_WINDOWS", False)
+                clean_img = telemetry.get("clean_view", frame)
+
+                if show_dual and "skeleton_view" in telemetry:
+                    cv2.imshow("Kiosk - Clean Patient View", clean_img)
+                    cv2.imshow("Kiosk - Diagnostic Skeleton View", telemetry["skeleton_view"])
+                else:
+                    cv2.imshow("Smart Triage Kiosk", clean_img)
+
+                if cv2.waitKey(1) & 0xFF == ord('q'):
+                    self.running = False
+                    break
+
+        except KeyboardInterrupt:
+            print("\n[!] Powering down systems gracefully...")
+        finally:
+            self.running = False
+            self.conveyor_belt.running = False
+            cap.release()
+            cv2.destroyAllWindows()
+            if hasattr(self.vision, "release"):
+                self.vision.release()
+            if hasattr(self.audio, "release"):
+                self.audio.release()
+            print("[+] Kiosk successfully and safely offline.")
+
+
+if __name__ == "__main__":
+    kiosk = SmartReceptionTriageKiosk()
+    kiosk.run()
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

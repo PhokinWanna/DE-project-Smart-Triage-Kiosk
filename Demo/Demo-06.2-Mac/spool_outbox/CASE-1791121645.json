@@ -1,0 +1,82 @@
+{
+  "case_id": "CASE-1791121645",
+  "start_time": "2026-10-04 20:47:25",
+  "language": "th",
+  "pdpa_consented": true,
+  "exit_reason": "NORMAL_COMPLETE",
+  "conversation": [
+    {
+      "role": "pdpa_response",
+      "text": "ยินยอมครับ"
+    },
+    {
+      "role": "patient",
+      "text": "คือวันนี้ผมมีอาการไม่สบาย ตรงที่ว่า พอดีเมื่อเช้าเนี่ยผมสดุดปันดาย ข้าวเท้าสายก็เลยครับครับ เดินลงนำหนักแล้วมันเจ็บนิดหน่อย"
+    },
+    {
+      "role": "kiosk_agent",
+      "text": "คุณบอกว่าเจ็บที่ไหนบ้างนะคะ"
+    },
+    {
+      "role": "patient",
+      "text": "อาเจ็บที่ค้อเท้าสายครับ"
+    },
+    {
+      "role": "kiosk_agent",
+      "text": "ดิฉันรู้สึกเสียใจที่ได้ยินว่าคุณมีอาการเจ็บ คุณบอกว่าเจ็บที่ค้อเท้าสาย คุณบอกว่าเจ็บเมื่"
+    },
+    {
+      "role": "patient",
+      "text": "ผมเจ็บที่ข้าวเท้าสายครับ"
+    },
+    {
+      "role": "kiosk_agent",
+      "text": "ดิฉันขอโทษค่ะ คุณพูดอะไรไม่ชัดเจน คุณเจ็บที่ไหนบ้างอีกบ้างนะคะ"
+    },
+    {
+      "role": "patient",
+      "text": "ผมเจ็บตรงข้อเท้าสายครับ"
+    },
+    {
+      "role": "kiosk_agent",
+      "text": "ดิฉันขอโทษค่ะ คุณบอกว่าเจ็บข้อเท้าสาย คุณบอกว่าเจ็บเมื่อไหร่แล้วนะคะ"
+    },
+    {
+      "role": "patient",
+      "text": "สายครับ สายมือ ผมเจ็บข้อทาวสาย"
+    },
+    {
+      "role": "kiosk_agent",
+      "text": "ดิฉันขอโทษค่ะ คุณบอกว่าข้อเท้าสายเจ็บ คุณบอกว่าข้อเท้าสายเจ็บอย่างไรบ้าง ค่ะ"
+    },
+    {
+      "role": "patient",
+      "text": "ไส้ ผมเจ็บข้าเท้าไส้ ไม่ใช่ไส้"
+    },
+    {
+      "role": "kiosk_agent",
+      "text": "ดิฉันรู้สึกเสียใจที่ได้ยินว่าคุณเจ็บข้าเท้า คุณบอกว่าเจ็บตรงข้อเท้าไส้ คุณบอกว่าเจ็บ"
+    },
+    {
+      "role": "patient",
+      "text": "โอเค ไม่เป็นไร พอแล้วครับ ผมต้องการออกจากตรงนี้"
+    }
+  ],
+  "cumulative_visual_signs": {
+    "chest_clutching": false,
+    "abdominal_clutching": false,
+    "head_clutching": false
+  },
+  "facial_skin_status": "NORMAL",
+  "visual_evidence_path": "/Users/petch_phokin/Desktop/All_Project/Final_Project/Demo/Demo-06.2-Mac/evidence/CASE-1791121645.jpg",
+  "triage_verdict": {
+    "esi_level": 4,
+    "urgency": "Less Urgent",
+    "scenario_type": "SCENARIO_B_SUBJECTIVE_ONLY",
+    "subjective": "คือวันนี้ผมมีอาการไม่สบาย ตรงที่ว่า พอดีเมื่อเช้าเนี่ยผมสดุดปันดาย ข้าวเท้าสายก็เลยครับครับ เดินลงนำหนักแล้วมันเจ็บนิดหน่อย อาเจ็บที่ค้อเท้าสายครับ ผมเจ็บที่ข้าวเท้าสายครับ ผมเจ็บตรงข้อเท้าสายครับ สายครับ สายมือ ผมเจ็บข้อทาวสาย ไส้ ผมเจ็บข้าเท้าไส้ ไม่ใช่ไส้ โอเค ไม่เป็นไร พอแล้วครับ ผมต้องการออกจากตรงนี้",
+    "objective": "Visual signs: {'chest_clutching': False, 'abdominal_clutching': False, 'head_clutching': False}, Facial Erythema: NORMAL",
+    "assessment": "Clinical assessment generated via deterministic fallback.",
+    "plan": "Route according to ESI priority triage protocol.",
+    "audit_mode": "DETERMINISTIC_FALLBACK_ACTIVE"
+  }
+}

@@ -1,0 +1,38 @@
+{
+  "case_id": "CASE-1791124812",
+  "start_time": "2026-10-04 21:40:12",
+  "language": "th",
+  "pdpa_consented": true,
+  "exit_reason": "NORMAL_COMPLETE",
+  "conversation": [
+    {
+      "role": "pdpa_response",
+      "text": "ประสงครับ"
+    },
+    {
+      "role": "patient",
+      "text": "คือวันนี้นะครับพอดีตอนเช้าผมสรุดบันใดลงมา ข้าวเท้าซ้ายผมก็เลยเคล็ดครับ เดินลงน้ำนักแล้วมันข้าจะเจ็บนิดหน่อย แต่ว่าไม่ได้เป็นอะไรมาก"
+    },
+    {
+      "role": "patient",
+      "text": "แล้วก็เป็นประมาณ 3 ชั่วโมงแล้วแล้วครับ ตั้งแต่ประมาณ 8 โมงเช้า เพราะตอนนี้เป็นเวลา 11 โมงใช่ไหมครับ แล้วก็ความเจ็บผมก็ให้อยู่ที่ประมาณ 3 เต็ม 10 ครับ"
+    }
+  ],
+  "cumulative_visual_signs": {
+    "chest_clutching": false,
+    "abdominal_clutching": false,
+    "head_clutching": false
+  },
+  "facial_skin_status": "NORMAL",
+  "visual_evidence_path": "/Users/petch_phokin/Desktop/All_Project/Final_Project/Demo/Demo-06.2-Mac/evidence/CASE-1791124812.jpg",
+  "triage_verdict": {
+    "esi_level": 4,
+    "urgency": "Less Urgent",
+    "scenario_type": "SCENARIO_B_SUBJECTIVE_ONLY",
+    "subjective": "คือวันนี้นะครับพอดีตอนเช้าผมสรุดบันใดลงมา ข้าวเท้าซ้ายผมก็เลยเคล็ดครับ เดินลงน้ำนักแล้วมันข้าจะเจ็บนิดหน่อย แต่ว่าไม่ได้เป็นอะไรมาก แล้วก็เป็นประมาณ 3 ชั่วโมงแล้วแล้วครับ ตั้งแต่ประมาณ 8 โมงเช้า เพราะตอนนี้เป็นเวลา 11 โมงใช่ไหมครับ แล้วก็ความเจ็บผมก็ให้อยู่ที่ประมาณ 3 เต็ม 10 ครับ",
+    "objective": "Visual signs: {'chest_clutching': False, 'abdominal_clutching': False, 'head_clutching': False}, Facial Erythema: NORMAL",
+    "assessment": "Clinical assessment generated via deterministic fallback.",
+    "plan": "Route according to ESI priority triage protocol.",
+    "audit_mode": "DETERMINISTIC_FALLBACK_ACTIVE"
+  }
+}

@@ -65,14 +65,14 @@ class SystemConfig:
     FASTER_WHISPER_COMPUTE = "int8"          # 8-bit quantization: lightweight (~600MB memory)
     FASTER_WHISPER_CPU_THREADS = 4
 
-    SPEECH_PAUSE_THRESHOLD = 2.5             # Wait 2.5s of silence before finalizing utterance
+    SPEECH_PAUSE_THRESHOLD = 1.5             # Wait 2.5s of silence before finalizing utterance
     SPEECH_TIMEOUT = 10.0                    # Max wait time for patient speech initiation
     SPEECH_PHRASE_LIMIT = 20.0               # Max duration of a continuous speaking turn
     MIC_ENERGY_THRESHOLD = 200               # Audio sensitivity floor
 
     # --- Conversational Clinical Rules & OPQRST ---
     MAX_OFFTOPIC_STRIKES = 3                 # 3 strikes = Altered Mental Status (ESI Level 2)
-    PROBE_MAX_TOKENS = 45                    # Strictly cap follow-up question generation latency
+    PROBE_MAX_TOKENS = 35                    # Strictly cap follow-up question generation latency
     
     # Stopping Intent Tokens
     STOP_PHRASES_TH = ["หมดแล้ว", "แค่นี้", "ไม่มีแล้ว", "พอแล้ว", "เสร็จแล้ว", "ไม่มีอะไรเพิ่ม", "มีเท่านี้"]
@@ -146,11 +146,12 @@ class SystemConfig:
 
     # --- Reasoning Engine (Local Ollama Llama 3.2) ---
     OLLAMA_HOST = os.getenv("OLLAMA_HOST", "http://localhost:11434")
-    OLLAMA_MODEL = "llama3.2:latest"
-    OLLAMA_TIMEOUT = 15.0                     # Hard timeout before deterministic fallback triggers
+    OLLAMA_MODEL = "llama3.2:1b" if os.getenv("USE_1B") else "llama3.2:latest"
+    # OLLAMA_TIMEOUT = 15.0                     # Hard timeout before deterministic fallback triggers
+    OLLAMA_TIMEOUT = 6.0
 
     # --- Background "Conveyor Belt" Outbox Spooler ---
     OUTBOX_SPOOL_DIR = os.path.join(BASE_DIR, "spool_outbox")
     NURSE_DASHBOARD_ENDPOINT = "http://127.0.0.1:8000/api/triage/submit_case"
     HTTP_TIMEOUT = 3.0
-    CONVEYOR_RETRY_INTERVAL = 5.0            # Seconds between dispatch retry attempts
+    CONVEYOR_RETRY_INTERVAL = 30.0            # Seconds between dispatch retry attempts
