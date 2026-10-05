@@ -336,27 +336,171 @@ Return ONLY a valid JSON object matching this schema:
                 out["scenario_details"] = scenario
                 out["inference_latency_sec"] = round(time.time() - start_t, 2)
                 return out
-        except Exception:
-            pass
+        except requests.Timeout:
+            fallback_reason = "DETERMINISTIC_FALLBACK_LLM_TIMEOUT"
+        except requests.ConnectionError:
+            fallback_reason = "DETERMINISTIC_FALLBACK_OLLAMA_UNREACHABLE"
+        except json.JSONDecodeError:
+            fallback_reason = "DETERMINISTIC_FALLBACK_JSON_PARSE_ERROR"
+        except Exception as e:
+            fallback_reason = f"DETERMINISTIC_FALLBACK_UNEXPECTED_{type(e).__name__.upper()}"
 
-        # Deterministic Fallback
-        if exit_val == "AMS_3_STRIKES" or visual_signs.get("chest_clutching", False):
-            esi = 2
+        print(f"[!] Final synthesis fallback triggered: {fallback_reason}")
+
+        # # Deterministic Fallback
+        # if exit_val == "AMS_3_STRIKES" or visual_signs.get("chest_clutching", False):
+        #     esi = 2
+        #     urgency = "Emergent / High Risk"
+        # elif visual_signs.get("abdominal_clutching", False) or visual_signs.get("head_clutching", False):
+        #     esi = 3
+        #     urgency = "Urgent (2+ Resources Anticipated)"
+        # else:
+        #     esi = 4
+        #     urgency = "Less Urgent"
+
+        # Critical keywords → ESI 1
+        ESI1_KEYWORDS = [
+            "หมดสติ", "ไม่รู้สึกตัว", "หยุดหายใจ", "ชักเกร็ง",
+            "unconscious", "not breathing", "cardiac arrest",
+            "seizure", "unresponsive"
+        ]
+
+        # Clearly minor keywords → ESI 5
+        ESI5_KEYWORDS = [
+            "ไข้หวัด", "น้ำมูก", "คัดจมูก", "ขอยา", "ต่ออายุยา",
+            "cold", "runny nose", "refill", "prescription renewal",
+            "minor cut", "small bruise"
+        ]
+
+        text_lower = transcript.lower()
+
+        # --- Prerequisite flags ---
+        no_visual_signs = not any([
+            visual_signs.get("chest_clutching", False),
+            visual_signs.get("abdominal_clutching", False),
+            visual_signs.get("head_clutching", False)
+        ])
+        normal_skin    = skin_status == "Normal"
+        no_conflict    = scenario["scenario_type"] != "SCENARIO_C_CLINICAL_CONFLICT"
+        normal_exit    = exit_val not in ("AMS_3_STRIKES", "EMERGENCY_ABORT")
+
+        # --- Step 1: ESI 1 — check first, must never be missed ---
+        is_esi1 = any(w in text_lower for w in ESI1_KEYWORDS)
+        # AMS + chest simultaneously = cannot rule out cardiac collapse
+        if exit_val == "AMS_3_STRIKES" and visual_signs.get("chest_clutching", False):
+            is_esi1 = True
+
+        # --- Step 2: Assign base ESI ---
+        if is_esi1:
+            esi    = 1
+            urgency = "Resuscitation — Immediate Life-Saving Intervention Required"
+
+        elif visual_signs.get("chest_clutching", False):
+            esi    = 2
             urgency = "Emergent / High Risk"
+
         elif visual_signs.get("abdominal_clutching", False) or visual_signs.get("head_clutching", False):
-            esi = 3
+            esi    = 3
             urgency = "Urgent (2+ Resources Anticipated)"
+
+        elif exit_val == "AMS_3_STRIKES":
+            # Cannot verify acuity → conservative
+            esi    = 3
+            urgency = "Urgent — Communication Barrier (Cannot Confirm Acuity)"
+
+        elif no_visual_signs and normal_skin and no_conflict and normal_exit:
+            # All clear conditions met → safe to assign ESI 4 or 5
+            if any(w in text_lower for w in ESI5_KEYWORDS):
+                esi    = 5
+                urgency = "Non-urgent (No Resources Anticipated)"
+            else:
+                esi    = 4
+                urgency = "Less Urgent (1 Resource Anticipated)"
+
         else:
-            esi = 4
-            urgency = "Less Urgent"
+            # LLM failed + unknown risk → conservative
+            esi    = 3
+            urgency = "Urgent (LLM Unavailable — Conservative Default)"
+
+        # --- Step 3: Escalate if CONFLICT scenario (stoic patient) ---
+        if scenario["scenario_type"] == "SCENARIO_C_CLINICAL_CONFLICT":
+            if esi > 2:
+                esi    -= 1
+                urgency += " [ESCALATED: Stoic Patient Conflict]"
+
+        # --- Step 4: Escalate if skin abnormal ---
+        if skin_status in ("Pallor (Pale)", "Flushing (RED)"):
+            if esi > 2:
+                esi    -= 1
+                urgency += f" [ESCALATED: Skin={skin_status}]"
+
+        # --- FIX: dynamic assessment + plan based on actual signals ---
+        if exit_val == "AMS_3_STRIKES":
+            assessment = (
+                "Patient repeatedly provided off-topic or non-clinical responses (3 strikes). "
+                "Communication barrier or altered cognition cannot be excluded. "
+                f"Visual posturing: chest={visual_signs.get('chest_clutching', False)}, "
+                f"abdominal={visual_signs.get('abdominal_clutching', False)}, "
+                f"head={visual_signs.get('head_clutching', False)}. "
+                f"Skin: {skin_status}. Scenario: {scenario['scenario_type']}."
+            )
+            plan = (
+                "Route to urgent assessment bay. Nurse to perform direct verbal assessment. "
+                "Consider altered mental status workup. Do NOT discharge without human evaluation."
+            )
+        elif visual_signs.get("chest_clutching", False):
+            assessment = (
+                f"Sustained Levine's sign observed (chest guarding). "
+                f"Skin status: {skin_status}. "
+                f"Scenario cross-validation: {scenario['scenario_type']} — {scenario['clinical_flag']}. "
+                "Cardiac or respiratory emergency cannot be ruled out at this stage."
+            )
+            plan = (
+                "Route immediately to resuscitation bay. Initiate 12-lead ECG and IV access. "
+                "Continuous SpO2 and BP monitoring. Notify on-call physician immediately."
+            )
+        elif visual_signs.get("abdominal_clutching", False):
+            assessment = (
+                f"Sustained abdominal guarding observed. "
+                f"Verbal complaint: '{transcript[:120]}'. "
+                f"Skin status: {skin_status}. "
+                f"Scenario: {scenario['scenario_type']} — {scenario['clinical_flag']}."
+            )
+            plan = (
+                "Route to acute care bay. IV access and basic labs (CBC, LFT, amylase) anticipated. "
+                "NPO until surgical assessment complete. Monitor vitals every 15 minutes."
+            )
+        elif visual_signs.get("head_clutching", False):
+            assessment = (
+                f"Sustained cranial distress posturing observed. "
+                f"Verbal complaint: '{transcript[:120]}'. "
+                f"Skin status: {skin_status}. "
+                f"Scenario: {scenario['scenario_type']} — {scenario['clinical_flag']}."
+            )
+            plan = (
+                "Route to acute care bay. Neurological assessment required. "
+                "Monitor for altered consciousness, photophobia, or focal deficits. "
+                "CT head if clinically indicated."
+            )
+        else:
+            assessment = (
+                f"No critical posturing detected. Verbal complaint: '{transcript[:120]}'. "
+                f"Skin status: {skin_status}. "
+                f"Scenario: {scenario['scenario_type']}."
+            )
+            plan = (
+                "Route to standard outpatient queue. Single resource anticipated. "
+                "Reassess if condition worsens while waiting."
+            )
+
 
         return {
             "esi_level": esi,
             "urgency": urgency,
             "scenario_type": scenario["scenario_type"],
             "subjective": transcript,
-            "objective": f"Visual signs: {visual_signs}, Facial Erythema: {skin_status}",
-            "assessment": "Clinical assessment generated via deterministic fallback.",
-            "plan": "Route according to ESI priority triage protocol.",
-            "audit_mode": "DETERMINISTIC_FALLBACK_ACTIVE"
+            "objective": f"Visual signs: {visual_signs}, Facial Skin Status (CNN): {skin_status}",
+            "assessment": assessment,
+            "plan": plan,
+            "audit_mode": fallback_reason 
         }
