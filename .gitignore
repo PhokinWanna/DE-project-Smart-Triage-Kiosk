@@ -4,10 +4,11 @@ DataSet-Archive/
 venv_gemini/
 venv_train/
 venv_kiosk/
-Train-dataset/dataset/
+Train-dataset/dataset/Flushing
+Train-dataset/dataset/Normal
 Call-API.py
 Train-dataset/Train-02-CNN/cnn_dataset-01/
-Train-dataset/Train-02-CNN/cnn_dataset-02/
+Train-dataset/Train-02-CNN/cnn_dataset-02-recent/
 Train-dataset/Train-02-CNN/cnn_dataset_split/
 Train-dataset/Train-02-CNN/split_dataset/
 Demo/Demo-04/__pycache__/
